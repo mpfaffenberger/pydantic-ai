@@ -2678,6 +2678,9 @@ class OpenAIResponsesModel(Model[AsyncOpenAI]):
                 )
             )
 
+        # `truncation` rides on the request params rather than the create call, so it must honor
+        # the unsupported-settings seam here too — `_drop_unsupported_params` runs too late for it.
+        unsupported_settings = profile.get('openai_unsupported_model_settings', ())
         return _ResponsesRequestParams(
             model=self.model_name,
             input=openai_messages,
@@ -2689,7 +2692,9 @@ class OpenAIResponsesModel(Model[AsyncOpenAI]):
             conversation=conversation_id or OMIT,
             reasoning=reasoning,
             text=text,
-            truncation=model_settings.get('openai_truncation', OMIT),
+            truncation=OMIT
+            if 'openai_truncation' in unsupported_settings
+            else model_settings.get('openai_truncation', OMIT),
             context_management=model_settings.get('openai_context_management', OMIT),
         )
 
