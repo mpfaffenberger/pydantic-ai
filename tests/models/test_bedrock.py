@@ -1483,7 +1483,9 @@ async def test_bedrock_citation_response_mapping(bedrock_provider: BedrockProvid
                                         },
                                         {
                                             'title': 'Pydantic AI',
-                                            'location': {'web': {'url': 'https://ai.pydantic.dev'}},
+                                            'location': {
+                                                'web': {'url': 'https://ai.pydantic.dev', 'domain': 'ai.pydantic.dev'}
+                                            },
                                         },
                                     ],
                                 }
@@ -1518,6 +1520,7 @@ async def test_bedrock_citation_response_mapping(bedrock_provider: BedrockProvid
                         WebCitationSource(
                             url='https://ai.pydantic.dev',
                             title='Pydantic AI',
+                            provider_details={'domain': 'ai.pydantic.dev'},
                         ),
                     ],
                     anchor=ContentCitationAnchor(start=0, end=len(text)),
@@ -1643,7 +1646,7 @@ async def test_bedrock_citations_replay_after_message_json_round_trip(
                                             title='Pydantic AI',
                                             provider_details={
                                                 'source': 'Web Search',
-                                                'location': {'web': {'url': 'https://ai.pydantic.dev'}},
+                                                'domain': 'ai.pydantic.dev',
                                             },
                                         ),
                                     ],
@@ -1677,7 +1680,7 @@ async def test_bedrock_citations_replay_after_message_json_round_trip(
                             {
                                 'title': 'Pydantic AI',
                                 'source': 'Web Search',
-                                'location': {'web': {'url': 'https://ai.pydantic.dev'}},
+                                'location': {'web': {'url': 'https://ai.pydantic.dev', 'domain': 'ai.pydantic.dev'}},
                             },
                         ],
                     }
@@ -1694,7 +1697,7 @@ async def test_bedrock_citations_replay_after_message_json_round_trip(
             'bedrock',
             Citation(
                 sources=[DocumentCitationSource(title='Returns policy')],
-                anchor=ContentCitationAnchor(start=0, end=7),
+                anchor=ContentCitationAnchor(start=0, end=8),
             ),
             id='incomplete',
         ),
@@ -1708,9 +1711,35 @@ async def test_bedrock_citations_replay_after_message_json_round_trip(
                         provider_details={'location': {'web': {'url': 'https://ai.pydantic.dev'}}},
                     )
                 ],
-                anchor=ContentCitationAnchor(start=0, end=7),
+                anchor=ContentCitationAnchor(start=0, end=8),
             ),
             id='foreign',
+        ),
+        pytest.param(
+            'bedrock',
+            Citation(
+                sources=[
+                    DocumentCitationSource(
+                        title='Returns policy',
+                        provider_details={'location': {'documentChar': {'documentIndex': -1, 'start': 0, 'end': 8}}},
+                    )
+                ],
+                anchor=ContentCitationAnchor(start=0, end=8),
+            ),
+            id='negative-index',
+        ),
+        pytest.param(
+            'bedrock',
+            Citation(
+                sources=[
+                    DocumentCitationSource(
+                        title='Returns policy',
+                        provider_details={'location': {'documentChar': {'documentIndex': 0, 'start': 8, 'end': 0}}},
+                    )
+                ],
+                anchor=ContentCitationAnchor(start=0, end=8),
+            ),
+            id='reversed-range',
         ),
     ],
 )
