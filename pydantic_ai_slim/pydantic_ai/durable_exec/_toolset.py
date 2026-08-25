@@ -10,7 +10,7 @@ from typing_extensions import Self, assert_never
 
 from pydantic_ai import AbstractToolset, FunctionToolset, ToolsetTool, WrapperToolset
 from pydantic_ai._cancel import RunCancellation
-from pydantic_ai._enqueue import PendingMessage
+from pydantic_ai._enqueue import PendingMessageInbox
 from pydantic_ai._utils import is_str_dict
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred, ModelRetry, ToolFailed, UserError
 from pydantic_ai.messages import InstructionPart, ToolReturn, ToolReturnContent
@@ -191,7 +191,7 @@ def unwrap_tool_call_result(result: CallToolResult) -> Any:
     assert_never(result)
 
 
-class EnqueueGuard(list[PendingMessage]):
+class EnqueueGuard(PendingMessageInbox):
     """Replaces `ctx.pending_messages` inside a durable unit, where enqueueing can't be supported.
 
     A durable unit's recorded output is replayed on recovery (DBOS), cache hit (Prefect), or
@@ -200,11 +200,7 @@ class EnqueueGuard(list[PendingMessage]):
     """
 
     def __init__(self, message: str):
-        super().__init__()
-        self._message = message
-
-    def append(self, pending: PendingMessage) -> None:
-        raise UserError(self._message)
+        super().__init__(closed_reason=message)
 
 
 def enqueue_not_supported_message(unit_noun: str, container_noun: str) -> str:

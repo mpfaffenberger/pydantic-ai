@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai._agent_graph import ModelRequestNode
-from pydantic_ai._enqueue import PendingMessage, PendingMessagePriority
+from pydantic_ai._enqueue import PendingMessage, PendingMessageInbox, PendingMessagePriority
 from pydantic_ai._utils import fill_run_metadata
 from pydantic_ai.capabilities.abstract import AbstractCapability, CapabilityOrdering
 from pydantic_ai.exceptions import UserError
@@ -24,15 +24,8 @@ def _drain_by_priority(
     priority: PendingMessagePriority,
 ) -> list[PendingMessage]:
     """Remove and return all messages with the given priority from the queue."""
-    drained: list[PendingMessage] = []
-    remaining: list[PendingMessage] = []
-    for msg in queue:
-        if msg.priority == priority:
-            drained.append(msg)
-        else:
-            remaining.append(msg)
-    queue[:] = remaining
-    return drained
+    assert isinstance(queue, PendingMessageInbox)
+    return queue.pop_priority(priority)
 
 
 def _stamped_messages(
@@ -141,8 +134,8 @@ class PendingMessageDrainCapability(AbstractCapability[Any]):
         # final step (e.g. a background task completing while the model produced
         # its final response) gets delivered before `'when_idle'` messages, and the
         # agent gets another turn rather than terminating with the message lost.
-        leftover_asap = _drain_by_priority(ctx.pending_messages, 'asap')
-        when_idle = _drain_by_priority(ctx.pending_messages, 'when_idle')
+        assert isinstance(ctx.pending_messages, PendingMessageInbox)
+        leftover_asap, when_idle = ctx.pending_messages.drain_at_end()
         if not leftover_asap and not when_idle:
             return result
 

@@ -6,9 +6,13 @@ state for the pending message queue, not part of the wire-serializable message h
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, SupportsIndex, TypeAlias
+
+from pydantic import GetCoreSchemaHandler
+from pydantic_core import core_schema
 
 from ._uuid import uuid7
 from .exceptions import UserError
@@ -164,3 +168,62 @@ class PendingMessage:
                 'items that form one), so the agent has a request to respond to.'
             )
         return cls(messages=messages, priority=priority)
+
+
+class PendingMessageInbox(list[PendingMessage]):
+    """Run-owned pending-message queue with atomic submission, draining, and closure."""
+
+    def __init__(self, values: Sequence[PendingMessage] = (), *, closed_reason: str | None = None) -> None:
+        super().__init__(values)
+        self._closed_reason = closed_reason
+        self._lock = threading.Lock()
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, _source_type: object, handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        list_schema = handler.generate_schema(list[PendingMessage])
+        return core_schema.no_info_after_validator_function(PendingMessageInbox, list_schema)
+
+    def append(self, pending: PendingMessage) -> None:
+        with self._lock:
+            if self._closed_reason is not None:
+                raise UserError(self._closed_reason)
+            super().append(pending)
+
+    def pop_priority(self, priority: PendingMessagePriority) -> list[PendingMessage]:
+        """Atomically remove and return all messages with `priority`."""
+        with self._lock:
+            return self._pop_priority(priority)
+
+    def drain_at_end(self) -> tuple[list[PendingMessage], list[PendingMessage]]:
+        """Drain both priorities or atomically close an empty inbox."""
+        with self._lock:
+            asap = self._pop_priority('asap')
+            when_idle = self._pop_priority('when_idle')
+            if not asap and not when_idle and self._closed_reason is None:
+                self._closed_reason = '`enqueue` is not available because the agent run has ended.'
+            return asap, when_idle
+
+    def close(self) -> None:
+        """Close the inbox so later submissions are rejected."""
+        with self._lock:
+            if self._closed_reason is None:
+                self._closed_reason = '`enqueue` is not available because the agent run has ended.'
+
+    def __reduce_ex__(
+        self, _protocol: SupportsIndex
+    ) -> tuple[type[PendingMessageInbox], tuple[list[PendingMessage]], str | None]:
+        with self._lock:
+            values = super().copy()
+            # Runtime subclasses may require different constructor arguments; closed behavior is preserved in state.
+            return PendingMessageInbox, (values,), self._closed_reason
+
+    def __setstate__(self, closed_reason: str | None) -> None:
+        self._closed_reason = closed_reason
+        self._lock = threading.Lock()
+
+    def _pop_priority(self, priority: PendingMessagePriority) -> list[PendingMessage]:
+        selected = [pending for pending in self if pending.priority == priority]
+        self[:] = [pending for pending in self if pending.priority != priority]
+        return selected

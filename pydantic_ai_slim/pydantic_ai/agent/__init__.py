@@ -1806,6 +1806,7 @@ class Agent(AbstractAgent[AgentDepsT, OutputDataT]):
             # the run is over so it can never cancel unrelated later work on this task.
             graph_deps.cancellation.bind()
             stack.callback(graph_deps.cancellation.finish)
+            stack.callback(state.pending_messages.close)
             if cancellation_token is not None:
                 graph_deps.cancellation.attach_token(cancellation_token)
 

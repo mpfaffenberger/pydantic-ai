@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import inspect
 import re
 import threading
 import time
 import warnings
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -19,11 +20,12 @@ from uuid import UUID
 
 import anyio
 import pytest
+from blockbuster import BlockBuster
 from opentelemetry.trace import NoOpTracer
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from pydantic_ai import Capability as TopLevelCapability, _agent_graph
-from pydantic_ai._enqueue import PendingMessage
+from pydantic_ai._enqueue import PendingMessage, PendingMessageInbox
 from pydantic_ai._run_context import RunContext
 from pydantic_ai._spec import CapabilitySpec, NamedSpec
 from pydantic_ai._utils import Some
@@ -60,6 +62,7 @@ from pydantic_ai.capabilities import (
     XSearch,
 )
 from pydantic_ai.capabilities._dynamic import ResolvedDynamicCapability
+from pydantic_ai.capabilities._pending_messages import PendingMessageDrainCapability
 from pydantic_ai.capabilities.abstract import AbstractCapability
 from pydantic_ai.capabilities.combined import CombinedCapability
 from pydantic_ai.capabilities.hooks import Hooks, HookTimeoutError
@@ -17388,6 +17391,18 @@ async def test_enqueue_when_idle_redirects_after_output_tool_end():
     )
 
 
+class _BlockingInbox(PendingMessageInbox):
+    def __init__(self, drain_started: threading.Event, release_drain: threading.Event) -> None:
+        super().__init__()
+        self._drain_started = drain_started
+        self._release_drain = release_drain
+
+    def __iter__(self) -> Iterator[PendingMessage]:
+        self._drain_started.set()
+        assert self._release_drain.wait(timeout=1)
+        return super().__iter__()
+
+
 async def test_enqueue_from_agent_run():
     """Messages can be enqueued from external code via AgentRun.enqueue."""
     call_count = 0
@@ -17414,6 +17429,8 @@ async def test_enqueue_from_agent_run():
 
     assert agent_run.result is not None
     assert call_count == 2  # First response triggers End, follow-up prevents it, second response is final
+    with pytest.raises(UserError, match='run has ended'):
+        agent_run.enqueue('too late')
     assert agent_run.result.all_messages() == snapshot(
         [
             ModelRequest(
@@ -17737,6 +17754,136 @@ def test_enqueue_without_live_queue_raises():
     assert ctx.pending_messages is None
     with pytest.raises(UserError, match='only available during an agent run'):
         ctx.enqueue('this has nowhere to go')
+
+
+async def test_enqueue_after_run_ends_raises():
+    """A retained tool context cannot enqueue into a run that has already ended."""
+    captured_ctx: RunContext[object] | None = None
+
+    def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if any(isinstance(message, ModelResponse) for message in messages):
+            return ModelResponse(parts=[TextPart(content='done')])
+        return ModelResponse(parts=[ToolCallPart(tool_name='capture_context', args='{}')])
+
+    agent = Agent(FunctionModel(model_fn))
+
+    @agent.tool
+    def capture_context(ctx: RunContext[object]) -> str:
+        nonlocal captured_ctx
+        captured_ctx = ctx
+        return 'captured'
+
+    await agent.run('capture it')
+
+    assert captured_ctx is not None
+    with pytest.raises(UserError, match='run has ended'):
+        captured_ctx.enqueue('too late')
+
+
+async def test_sync_enqueue_waits_for_pending_message_drain(blockbuster: BlockBuster | None):
+    """A sync enqueue cannot be lost while the pending-message queue is drained."""
+    drain_started = threading.Event()
+    release_drain = threading.Event()
+    inbox = _BlockingInbox(drain_started, release_drain)
+    ctx = RunContext(
+        deps=None,
+        model=TestModel(),
+        usage=RunUsage(),
+        pending_messages=inbox,
+        _event_stream_buffer=[],
+    )
+    request_context = ModelRequestContext(
+        model=TestModel(),
+        messages=[],
+        model_settings=None,
+        model_request_parameters=ModelRequestParameters(),
+    )
+
+    def drain() -> None:
+        asyncio.run(PendingMessageDrainCapability().before_model_request(ctx, request_context))
+
+    enqueue_started = threading.Event()
+
+    def enqueue() -> None:
+        enqueue_started.set()
+        ctx.enqueue('from sync background work')
+
+    if blockbuster is not None:
+        blockbuster.deactivate()
+    try:
+        drain_thread = threading.Thread(target=drain)
+        drain_thread.start()
+        assert await asyncio.to_thread(drain_started.wait, 1)
+
+        enqueue_thread = threading.Thread(target=enqueue)
+        enqueue_thread.start()
+        assert await asyncio.to_thread(enqueue_started.wait, 1)
+        assert enqueue_thread.is_alive()
+
+        release_drain.set()
+        await asyncio.to_thread(drain_thread.join, 1)
+        await asyncio.to_thread(enqueue_thread.join, 1)
+    finally:
+        if blockbuster is not None:
+            blockbuster.activate()
+
+    assert not drain_thread.is_alive()
+    assert not enqueue_thread.is_alive()
+    assert len(inbox) == 1
+
+
+def test_sync_enqueue_racing_run_end_is_rejected():
+    """Final queue inspection and closure are atomic with a sync enqueue."""
+    drain_started = threading.Event()
+    release_drain = threading.Event()
+
+    inbox = _BlockingInbox(drain_started, release_drain)
+    ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage(), pending_messages=inbox)
+    enqueue_started = threading.Event()
+    enqueue_errors: list[UserError] = []
+
+    drain_thread = threading.Thread(target=inbox.drain_at_end)
+    drain_thread.start()
+    assert drain_started.wait(timeout=1)
+
+    def enqueue() -> None:
+        enqueue_started.set()
+        try:
+            ctx.enqueue('too late')
+        except UserError as error:
+            enqueue_errors.append(error)
+
+    enqueue_thread = threading.Thread(target=enqueue)
+    enqueue_thread.start()
+    assert enqueue_started.wait(timeout=1)
+    assert enqueue_thread.is_alive()
+
+    release_drain.set()
+    drain_thread.join(timeout=1)
+    enqueue_thread.join(timeout=1)
+
+    assert not drain_thread.is_alive()
+    assert not enqueue_thread.is_alive()
+    assert len(enqueue_errors) == 1
+    assert str(enqueue_errors[0]) == '`enqueue` is not available because the agent run has ended.'
+
+
+def test_pending_message_inbox_can_be_copied():
+    """The runtime-only lock does not make graph state uncopyable."""
+    pending = PendingMessage.from_content('queued')
+    assert pending is not None
+    inbox = PendingMessageInbox([pending])
+
+    copied = copy.deepcopy(inbox)
+
+    assert copied == inbox
+    copied.append(PendingMessage(messages=[ModelRequest(parts=[])]))
+    assert len(copied) == 2
+
+    inbox.close()
+    copied_closed = copy.deepcopy(inbox)
+    with pytest.raises(UserError, match='run has ended'):
+        copied_closed.append(pending)
 
 
 async def test_enqueue_parts_style_calls_produce_one_request_per_call():

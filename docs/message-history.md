@@ -672,14 +672,11 @@ loop all deliver enqueued messages.
       system-prompt callback that re-enqueues on each reinjection), the run will
       loop indefinitely. Set [`UsageLimits`][pydantic_ai.usage.UsageLimits] on the
       run as a safety net.
-    - `enqueue` is designed to be called from the same event loop that drives the
-      agent run. Inside the run that's automatic: async tools, sync tools (which
-      Pydantic AI auto-wraps in a thread executor), and capability hooks all
-      enqueue safely because the drain only iterates between graph nodes, never
-      concurrently with a tool body. If you're forwarding events from a *different*
-      thread or loop (e.g. a webhook handler), marshal the call onto the agent's
-      loop first — e.g. `loop.call_soon_threadsafe(agent_run.enqueue, msg)`. The
-      drain isn't atomic against concurrent cross-thread appends.
+    - [`RunContext.enqueue`][pydantic_ai.tools.RunContext.enqueue] synchronizes submissions from
+      async and sync tools, including background work, while the run is active. A retained context
+      rejects `enqueue` after its run ends. [`AgentRun.enqueue`][pydantic_ai.run.AgentRun.enqueue]
+      remains designed for the event loop driving the run; marshal calls from a different thread
+      or loop onto that loop, for example with `loop.call_soon_threadsafe(agent_run.enqueue, msg)`.
 
 ## Processing Message History
 
