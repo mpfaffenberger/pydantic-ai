@@ -1042,6 +1042,9 @@ def test_model_json_schema_with_capabilities():
                         'gateway/openai:gpt-5.4-nano',
                         'gateway/openai:gpt-5.4-nano-2026-03-17',
                         'gateway/openai:gpt-5.5',
+                        'gateway/openai:gpt-5.5-2026-04-23',
+                        'gateway/openai:gpt-5.5-pro',
+                        'gateway/openai:gpt-5.5-pro-2026-04-23',
                         'gateway/openai:gpt-5.6-cyber',
                         'gateway/openai:gpt-5.6-luna',
                         'gateway/openai:gpt-5.6-sol',
@@ -1225,6 +1228,9 @@ def test_model_json_schema_with_capabilities():
                         'openai-chat:gpt-5.4-nano',
                         'openai-chat:gpt-5.4-nano-2026-03-17',
                         'openai-chat:gpt-5.5',
+                        'openai-chat:gpt-5.5-2026-04-23',
+                        'openai-chat:gpt-5.5-pro',
+                        'openai-chat:gpt-5.5-pro-2026-04-23',
                         'openai-chat:gpt-5.6-cyber',
                         'openai-chat:gpt-5.6-luna',
                         'openai-chat:gpt-5.6-sol',
@@ -1302,6 +1308,9 @@ def test_model_json_schema_with_capabilities():
                         'openai:gpt-5.4-nano',
                         'openai:gpt-5.4-nano-2026-03-17',
                         'openai:gpt-5.5',
+                        'openai:gpt-5.5-2026-04-23',
+                        'openai:gpt-5.5-pro',
+                        'openai:gpt-5.5-pro-2026-04-23',
                         'openai:gpt-5.6-cyber',
                         'openai:gpt-5.6-luna',
                         'openai:gpt-5.6-sol',
@@ -1391,6 +1400,8 @@ def test_model_json_schema_with_capabilities():
                         'xai:grok-4.3-latest',
                         'xai:grok-4.5',
                         'xai:grok-4.5-latest',
+                        'xai:grok-4.6',
+                        'xai:grok-build-0.1',
                         'xai:grok-code-fast-1',
                         'zai:autoglm-phone-multilingual',
                         'zai:glm-4-32b-0414-128k',
@@ -22952,6 +22963,58 @@ def test_deferred_tool_requests_build_results_validates_ids():
     results = requests.build_results(approvals={'approval_1': True}, calls={'call_1': 'result'})
     assert results.approvals == {'approval_1': True}
     assert results.calls == {'call_1': 'result'}
+
+
+def test_deferred_tool_requests_remaining_cross_category_ids_do_not_resolve():
+    """remaining() only resolves requests with a same-kind result, never a mis-keyed one."""
+    approval = ToolCallPart('a', {}, tool_call_id='approval_1')
+    call = ToolCallPart('b', {}, tool_call_id='call_1')
+    requests = DeferredToolRequests(
+        approvals=[approval],
+        calls=[call],
+        metadata={'approval_1': {'kind': 'approval'}, 'call_1': {'kind': 'call'}},
+    )
+
+    mis_keyed = DeferredToolResults(approvals={'call_1': True}, calls={'approval_1': 'result'})
+    assert requests.remaining(mis_keyed) == requests
+
+    matching = DeferredToolResults(approvals={'approval_1': True}, calls={'call_1': 'result'})
+    assert requests.remaining(matching) is None
+
+    approval_only = DeferredToolResults(approvals={'approval_1': True})
+    assert requests.remaining(approval_only) == DeferredToolRequests(
+        calls=[call], metadata={'call_1': {'kind': 'call'}}
+    )
+
+
+async def test_deferred_tool_handler_ignores_cross_category_ids():
+    """A cross-category handler result does not execute an external call."""
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart('external_tool', {}, tool_call_id='call_1')])
+        raise AssertionError('A cross-category result must not resume the model')  # pragma: no cover
+
+    async def handle_deferred(ctx: RunContext, requests: DeferredToolRequests) -> DeferredToolResults:
+        return DeferredToolResults(approvals={'call_1': True})
+
+    agent = Agent(
+        FunctionModel(model),
+        output_type=[str, DeferredToolRequests],
+        capabilities=[HandleDeferredToolCalls(handler=handle_deferred)],
+    )
+    calls = 0
+
+    @agent.tool
+    def external_tool(ctx: RunContext) -> str:
+        nonlocal calls
+        calls += 1
+        raise CallDeferred
+
+    result = await agent.run('go')
+
+    assert calls == 1
+    assert result.output == DeferredToolRequests(calls=[ToolCallPart('external_tool', {}, tool_call_id='call_1')])
 
 
 def test_deferred_tool_requests_build_results_approve_all():
