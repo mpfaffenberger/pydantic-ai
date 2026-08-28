@@ -30,11 +30,11 @@ from pydantic import BaseModel, Field, SecretStr, StrictFloat, StrictInt, Valida
 from typing_extensions import Self
 
 from pydantic_ai._http import create_async_httpx2_client
-from pydantic_ai.exceptions import ModelAPIError, UserError
+from pydantic_ai.exceptions import UserError
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.profiles.openai_codex import openai_codex_model_profile
 
-from ._oauth import OAuthFlow
+from ._oauth import CredentialsError, OAuthFlow, post_token_request
 from ._openai_compatible import (
     AsyncHTTPClient as _OpenAIHTTPClient,
     OpenAICompatibleProvider as _OpenAICompatibleProvider,
@@ -77,19 +77,10 @@ _ORIGINATOR = 'pydantic-ai'
 _TOKEN_EXPIRY_BUFFER = timedelta(seconds=30)
 
 
-class _CredentialsError(ModelAPIError):
-    """Base for Codex credential failures.
+class _CredentialsError(CredentialsError):
+    """Base for Codex credential failures; a `ModelAPIError` so e.g. `FallbackModel` falls back."""
 
-    Subclasses [`ModelAPIError`][pydantic_ai.exceptions.ModelAPIError] so the standard handling of
-    provider failures (e.g. [`FallbackModel`][pydantic_ai.models.fallback.FallbackModel]) applies;
-    the auth layer runs below any specific model, so `model_name` is the provider name.
-    """
-
-    def __init__(self, message: str):
-        super().__init__(model_name='openai-codex', message=message)
-
-    def __reduce__(self) -> tuple[type, tuple[Any, ...]]:
-        return self.__class__, (self.message,)
+    provider_name = 'openai-codex'
 
 
 class CredentialsRefreshError(_CredentialsError):
@@ -196,13 +187,6 @@ class _TokenResponse(BaseModel):
     account_id: str | None = None
 
 
-class _TokenErrorResponse(BaseModel):
-    """An OAuth token-endpoint error body."""
-
-    error: str | None = None
-    error_description: str | None = None
-
-
 def _jwt_payload(token: str) -> _JwtPayload | None:
     """Decode a JWT payload without verifying the signature. Returns `None` for anything malformed."""
     try:
@@ -261,30 +245,10 @@ def _credentials_from_token_response(
 async def _post_token_request(
     url: str, form: Mapping[str, str], http_client: httpx2.AsyncClient | None = None
 ) -> _TokenResponse:
-    """POST a form-urlencoded OAuth token request and decode the JSON response.
-
-    When `http_client` is given the request goes through it (so custom transports and proxies apply
-    to refreshes too); otherwise an ephemeral client is used.
-    """
-    if http_client is None:
-        async with httpx2.AsyncClient(timeout=httpx2.Timeout(timeout=30, connect=5)) as client:
-            response = await client.post(url, data=dict(form), headers={'Accept': 'application/json'})
-    else:
-        response = await http_client.post(url, data=dict(form), headers={'Accept': 'application/json'})
-    if response.status_code != 200:
-        try:
-            body = _TokenErrorResponse.model_validate(response.json())
-        except ValueError:
-            body = _TokenErrorResponse()
-        detail = body.error_description or body.error or response.text[:200]
-        hint = '; the grant was rejected, rerun the authorization flow' if body.error == 'invalid_grant' else ''
-        raise CredentialsRefreshError(
-            f'Token request to {url} failed with status {response.status_code}: {detail}{hint}'
-        )
-    try:
-        return _TokenResponse.model_validate(response.json())
-    except ValueError:
-        raise CredentialsRefreshError(f'Token endpoint {url} returned an unexpected response.') from None
+    """POST an OAuth token request for the Codex client; see `post_token_request`."""
+    return await post_token_request(
+        url, form, response_type=_TokenResponse, error=CredentialsRefreshError, http_client=http_client
+    )
 
 
 async def refresh_credentials(
