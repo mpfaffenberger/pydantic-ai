@@ -26,7 +26,9 @@ from pydantic_clai2.plugins import (
     DepsT,
     FullScreen,
     HostEvent,
+    ModelProvider,
     PluginHost,
+    PluginLogin,
     Renderer,
     SessionEnd,
     SessionEndReason,
@@ -236,6 +238,15 @@ class PluginLoader(Generic[DepsT]):
         shipped = sorted((entry for entry in entries if entry.name in order), key=lambda entry: order[entry.name])
         return [*shipped, *(entry for entry in entries if entry.name not in order)]
 
+    def _ensure_plugins_dir(self) -> None:
+        """Create the drop-in folder, so installing a plugin is one copy into a folder that already exists."""
+        try:
+            self._store.plugins_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._console.print(
+                f'Cannot create the plugins folder: {exc}', style=theme.color(theme.ERROR), markup=False
+            )
+
     def _discover(self) -> dict[str, Path]:
         folder = self._store.plugins_dir
         if not folder.is_dir():
@@ -278,6 +289,18 @@ class PluginLoader(Generic[DepsT]):
         """Plugin spinners, in load order, so a later plugin wins a name collision."""
         return [spinner for host in self._loaded.values() for spinner in host.spinners]
 
+    def model_providers(self) -> dict[str, ModelProvider]:
+        """Plugin model prefixes; a later plugin wins a prefix collision, as with spinners."""
+        return {provider.prefix: provider for host in self._loaded.values() for provider in host.model_providers}
+
+    def logins(self) -> dict[str, PluginLogin]:
+        """Plugin sign-ins for `/login NAME`; a later plugin wins a name collision, as with model prefixes."""
+        return {login.name: login for host in self._loaded.values() for login in host.logins}
+
+    def model_names(self) -> list[str]:
+        """Every plugin-offered model, with its prefix, for menus and completions."""
+        return [name for provider in self.model_providers().values() for name in provider.names]
+
     async def load_all(self, *, fresh: bool = False) -> None:
         """Load enabled plugins, re-importing after a shell reload so host event types match.
 
@@ -285,6 +308,8 @@ class PluginLoader(Generic[DepsT]):
         version, is skipped quietly: `/plugins list` still shows the failure. Loading it explicitly
         with `/plugins enable`, `add`, or `reload` still raises.
         """
+        if self.enabled:
+            self._ensure_plugins_dir()
         for entry in self._registration_order():
             if entry.declaration.enabled and entry.host is None:
                 try:

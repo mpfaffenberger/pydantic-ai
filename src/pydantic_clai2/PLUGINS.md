@@ -179,8 +179,8 @@ Other tools keep their existing validation.
 
 The [bundled guide](pydantic_clai2/customization.md) includes examples for
 commands, hooks, settings, renderers, custom Termflow menus, and custom model
-launchers. It also names current limits: PluginHost does not register providers,
-replace the prompt editor, or alter the built-in model catalog. Those need a
+launchers. It also names current limits: PluginHost does not replace the prompt
+editor or change the built-in model catalog's entries. Those need a
 custom agent launcher or a source change, as explained in the guide.
 
 Custom agents can opt in with `customization_guide()` from
@@ -206,7 +206,7 @@ Output-validation and HTTP transport retry budgets are unchanged.
 
 ## Credentials
 
-CLAI's `/login openai-codex`, `/login github-copilot`, and the vllm and openrouter connections store tokens
+CLAI's `/login codex`, `/login copilot`, and the vllm and openrouter connections store tokens
 in the configured keyring backend, not plugin settings. Plugins that need an API key, such as
 [`posthog`](#posthog-posthog-analytics-signed-in-for-clai), keep it in `/keys` and save only its name. Large token bundles use
 multiple entries to fit Windows Credential Manager's size limit. When no keyring
@@ -221,7 +221,7 @@ details.
 uv run clai2
 ```
 
-Run `/login github-copilot`, then open `/add_model` and choose `github-copilot`.
+Run `/login copilot`, then open `/add_model` and choose `github-copilot`.
 The provider menu also starts login when no credentials exist. No application
 registration or client ID configuration is required. CLAI supplies the same
 [public Copilot OAuth client ID as Pi](https://github.com/earendil-works/pi/blob/fde38ed7c2f64434beffc6c0ec3b9994cb89ae23/packages/ai/src/auth/oauth/github-copilot.ts#L10-L11)
@@ -244,7 +244,7 @@ organization policy still control inference access. A known ID also works with
 The `github-copilot` keyring account is separate from Codex and named API keys.
 Without a keyring, CLAI reports the plaintext `credentials-github-copilot.json`
 fallback, created with mode `0600`. Tokens and issuance time stay out of settings,
-history, and login output. Expiring tokens require another `/login github-copilot`;
+history, and login output. Expiring tokens require another `/login copilot`;
 there is no automatic refresh. Failed or cancelled authorization preserves the
 previous login.
 
@@ -255,6 +255,49 @@ no login is saved. Copilot login does not read `GH_TOKEN`, `GITHUB_TOKEN`, the
 belongs to the separate [`github` plugin](#github-tools-from-githubs-hosted-mcp-server). This is shell-owned authentication, not a plugin API.
 Core owns inference and its telemetry; CLAI adds no login-specific spans.
 Bare `/login` continues to sign in to Codex.
+
+## Herdr integration
+
+The built-in `herdr` plugin (`pydantic_clai2.builtin_plugins.herdr`) starts disabled.
+Run `/plugins enable herdr` inside a [herdr](https://herdr.dev) pane. Use
+`/plugins disable herdr` to release the pane and stop reporting. No herdr-side
+integration install is needed. The plugin requires `HERDR_ENV=1`,
+`HERDR_SOCKET_PATH`, and `HERDR_PANE_ID`; optional `HERDR_TAB_ID` enables tab titles.
+Outside herdr, or on Windows, it registers nothing and starts no worker.
+
+It reports `working` while agent runs are in flight, `blocked` while `AskUser`
+waits for an answer, and `idle` otherwise. Failed and cancelled runs return to
+`idle` too. Nested runs are counted; concurrent question waits are tracked by
+request ID. Tool names supply activity text, never tool arguments or results.
+User-opened menus do not report `blocked`. Other approval UIs are not tracked:
+CLAI2 has no universal approval-wait event. Herdr owns attention notifications;
+this plugin sends none. To avoid duplicate desktop alerts, separately disable
+CLAI2's `notifications` plugin if you prefer herdr's alerts.
+
+Persisted sessions report their stable conversation ID and SQLite database path,
+not a per-run ID. Resume manually with `clai2 --resume SESSION-ID` using the same
+CLAI2 config directory. Automatic restoration by herdr is not verified. Hosts
+without CLAI2 session persistence still report state and token metadata.
+
+Metadata has a 24-hour TTL and reports `$model`, `$tokens` (retained-history
+input plus output tokens), and `$context` (percentage from the compaction
+plugin's context events, omitted when unknown). Add those fields to your herdr
+sidebar's `rows_by_agent.clai2` configuration to display them. No prompts,
+answers, or tool contents are sent; session IDs, database paths, and conversation
+titles are sent to the local herdr socket.
+
+The pane title follows the persisted conversation title, including background
+naming and manual renames, checked every two seconds. Each metadata update keeps
+the current title. Only single-pane tabs are renamed. The original tab label is
+restored on session changes or clean unload, but a manually renamed or shared
+tab is left alone. An abrupt exit may leave the last tab label in place.
+
+Socket IO uses a plugin-owned daemon worker with bounded, latest-wins mailboxes.
+State and session reports take priority over activity and metadata. Requests
+retry up to three times with the same sequence number; missing sockets and
+server errors are nonfatal. Unloading cancels and drains the title watcher,
+discards queued work, and attempts one release with bounded shutdown. A departed
+or unresponsive herdr may miss reports; they do not fail the agent turn.
 
 ## Desktop notifications
 
@@ -595,7 +638,8 @@ Two ways to install one:
 
 1. Drop a `.py` file (or a package folder) into
    `$XDG_CONFIG_HOME/pydantic-clai2/plugins/` (default `~/.config/pydantic-clai2/plugins/`).
-   Its name is the file name without `.py`.
+   Its name is the file name without `.py`. CLAI creates the folder at startup, so it
+   is there to copy into after the first run.
 2. Point CLAI at anything importable, from the shell or from inside CLAI:
 
    ```sh
@@ -620,7 +664,7 @@ Plugins are trusted code running as you. Only install what you trust.
 clai2 --worktree my-task
 ```
 
-`--worktree` (or `-w`) creates `<repository-root>/.worktrees/NAME` and changes to
+`--worktree` (or `-w`) creates or reopens `<repository-root>/.worktrees/NAME` and changes to
 that directory before reading project settings or activating plugins. Relative paths in your plugin, the coding tools,
 and `repo_context` therefore refer to that checkout. User plugins and settings
 still load from the same database directory, even with a relative `--database`
@@ -863,7 +907,7 @@ The token is looked up on every run. If none is available when the plugin loads
 loads, prints a warning, and keeps its settings menu available. Until you sign
 in or save a key, each run fails with an error saying how to fix it, so the agent
 never runs as the wrong account. `/keys` does not stop you renaming or deleting a
-key that a plugin uses. Neither sign-in uses your `/login github-copilot` login,
+key that a plugin uses. Neither sign-in uses your `/login copilot` login,
 and Copilot does not read the `GITHUB_TOKEN` key. The plugin emits no telemetry
 of its own; tool calls appear in core's spans.
 
@@ -1494,7 +1538,7 @@ A prompt cancelled by `turn_start` never starts an agent run and is not retained
 `/fork` fires both hooks for its background run too: a `turn_start` that cancels
 the prompt refuses the fork, and `turn_end` arrives when the fork finishes.
 
-Codex token-refresh failures show `/login openai-codex` recovery advice, including
+Codex token-refresh failures show `/login codex` recovery advice, including
 when the SDK wraps them as connection errors. This changes only the terminal
 message: `turn_end.error` still contains the original exception and its chain.
 Headless runs show the same advice on stderr and exit with code 1.
@@ -1561,6 +1605,10 @@ list when there is none); `/fork` does this so prompts keep their apostrophes.
 It may be `async`. Add `complete=` to offer Tab suggestions. The registry filters
 command names and returned candidates by case-sensitive substring, replacing the
 whole typed fragment when selected. Return full candidates, not just suffixes.
+Set `available=` to a zero-argument callable returning a boolean to gate dispatch,
+help, and completion on live session state. It defaults to always available.
+Unavailable commands retain their registered names and ownership, so they still
+participate in duplicate checks and are removed on plugin unload.
 Names must be unique;
 clashing with a built-in is an error at startup, not a silent override.
 
@@ -1864,7 +1912,9 @@ row itself is CLAI's; a plugin adds to it with the next registration.
 ### Add to the status row: `host.status_segment(fn)`
 
 `fn` takes no arguments and returns a short string. It is appended after the
-built-in figures, painted muted, and dropped when the plugin unloads.
+built-in figures, painted muted, and dropped when the plugin unloads. The built-in
+row accents output-token counts and tool names using the selected theme; plugin
+fragments stay muted.
 
 ```python
 import os
@@ -1904,6 +1954,63 @@ spaced name, an empty frame list, or a control character in a frame raises
 `ValueError` during activation. A plugin spinner replaces a builtin of the same
 name; the user's `spinners.json` replaces both. Unloading the plugin removes it,
 and a selected spinner that is gone shows the default `working`.
+
+### Run models under your own prefix: `host.model_provider(prefix, resolve, *, models)`
+
+Makes `PREFIX:NAME` a model CLAI can run, for a Pydantic AI `Model` that no core
+provider builds, such as one authenticated with a subscription login:
+
+```python
+from pydantic_ai.models import Model
+from pydantic_clai2.plugins import PluginHost
+
+
+def activate(host: PluginHost[None]) -> None:
+    def resolve(name: str) -> Model:
+        return MyModel(name, provider=MyProvider())
+
+    host.model_provider('my-service', resolve, models=('fast', 'smart'))
+```
+
+`models` are listed under the prefix in `/add_model` and completed by `/set model`
+and `/add_model`; any other `my-service:NAME` can still be typed. `resolve` gets
+`NAME` without the prefix. CLAI calls it in a worker thread before every run with
+one of these models, so reading the keyring there is fine, and a sign-in made
+since the last run applies. Raise `UserError` naming the setup step when it cannot
+build the model; the run fails with that message.
+
+The prefix starts with a lowercase letter, followed by lowercase letters, digits,
+and hyphens. It cannot be one Pydantic AI or CLAI already runs, aliases included
+(`anthropic`, `openai-chat`, `azure`, `openai-codex`, `vllm`, ...): that raises
+`ValueError` during activation. Only a name with a colon is looked up, so a bare
+`my-service` is never routed to the plugin. When two plugins register one prefix, the later one
+wins. Unloading the plugin removes the prefix; a saved model under it stays in
+`/model`, and runs with it fail as an unknown provider until the plugin is enabled
+again.
+
+### Add a sign-in to `/login`: `host.login(name, handler)`
+
+`/login NAME` signs in to a subscription: `codex` (bare `/login`) and `copilot`
+ship with CLAI, and `openai-codex` and `github-copilot` still work. A plugin whose
+models need a sign-in adds its own name next to them:
+
+```python
+from pydantic_clai2.plugins import PluginHost
+
+
+def activate(host: PluginHost) -> None:
+    async def sign_in() -> str:
+        ...  # run the OAuth flow, save tokens to the keyring
+        return 'Signed in to My Service.'
+
+    host.login('my-service', sign_in)
+```
+
+`/login my-service` awaits `sign_in` and shows the message it returns, and `/login`
+completes the name. Raise `UserError` when signing in fails, and keep tokens in the
+keyring, never in plugin settings. The name uses the same format as a model prefix
+and cannot be one of CLAI's sign-ins; when two plugins add one name, the later one
+wins. Unloading the plugin removes it.
 
 ## Rules that keep plugins predictable
 
@@ -2091,6 +2198,14 @@ not enable fast mode. The stored values remain `service_tier=priority` and
 `service_tier=default`, so older CLAI versions can read them. A custom
 `service_tier` body parameter still takes precedence.
 
+While the active model starts with `openai-codex:`, `/fast` toggles between
+priority and standard processing. `/fast on` and `/fast off` select explicitly.
+It saves the active model's service tier for subsequent prompts and sessions,
+without changing reasoning effort or other preferences. It is absent from help
+and Tab completion on other models, and typing it there reports an unknown command.
+If a custom `service_tier` parameter is set, `/fast` asks you to remove it first
+with `/model_settings` rather than saving an ineffective change.
+
 Model preferences are shared across checkouts. Reading saved preferences ignores
 unknown fields, so newer settings do not break an older reader with this
 compatibility fix. Editing or resetting a known field preserves unknown fields
@@ -2194,7 +2309,7 @@ This is a notification, not the durable source of truth or permission to replay 
 tool. A durable replay may notify again. An observer failure cannot roll back the
 already committed snapshot. No new CLAI lifecycle hooks are introduced.
 
-Session naming is a shell-owned background service over Harness's `SessionNamer`.
+Session naming is a shell-owned background service (`runtime/session_naming.py`).
 It never writes into the agent transcript or loads plugin code. `/resume` does
 not fire plugin load/unload hooks or restore previous plugin approvals. Cross-project
 resume keeps the current working directory and the saved conversation's original
@@ -2204,6 +2319,11 @@ project/session browser is a dedicated Termflow widget: unlike a single-pane
 pure frame and scripted-key tests follow the same headless menu conventions.
 The selected project stays highlighted while browsing sessions. The focused pane
 is labeled **SELECT PROJECT** or **SELECT SESSION**, with matching key hints.
+
+The browser groups existing Git worktrees by repository and labels session cards
+with the current branch or detached worktree name. This is display metadata only;
+saved workspace paths and cross-directory confirmation are unchanged. See
+[Saved sessions](README.md#saved-sessions-and-resume) for fallback behavior.
 
 The resume transcript preview displays at most 24,000 characters of the newest-first
 text, with a truncation notice for longer histories. Search is Unicode

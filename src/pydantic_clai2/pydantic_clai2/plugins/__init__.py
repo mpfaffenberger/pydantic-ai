@@ -1,5 +1,6 @@
 """Everything a plugin can register, recorded on one host per plugin."""
 
+import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
@@ -49,9 +50,11 @@ from pydantic_ai.capabilities.hooks import (
 )
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
+from pydantic_ai.providers import infer_provider_class
 from pydantic_ai_harness.step_persistence import StepStore
 from pydantic_clai2.commands import Commands
 from pydantic_clai2.config import Settings
+from pydantic_clai2.models import CLAI_PROVIDERS, LOGIN_ALIASES, LOGINS
 from pydantic_clai2.ui.rendering.spinners import Spinner, make_spinner
 from pydantic_clai2.ui.rendering.status import Status, StatusSegment
 
@@ -151,6 +154,60 @@ class TurnEnd:
     outcome: TurnOutcome
     result: AgentRunResult[object] | None = None
     error: BaseException | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModelProvider:
+    """Models a plugin runs under its own `PREFIX:`; see `PluginHost.model_provider`."""
+
+    prefix: str
+    resolve: Callable[[str], Model]
+    """Build the model for a name given without its prefix."""
+    models: tuple[str, ...] = ()
+    """Names without the prefix, offered by `/add_model` and `/set model`."""
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """`models` as CLAI shows and saves them, with the prefix."""
+        return tuple(f'{self.prefix}:{name}' for name in self.models)
+
+
+@dataclass(frozen=True, kw_only=True)
+class PluginLogin:
+    """A sign-in a plugin adds as `/login NAME`; see `PluginHost.login`."""
+
+    name: str
+    handler: Callable[[], Awaitable[str]]
+    """Sign in and return the message to show."""
+
+
+_PROVIDER_PREFIX = re.compile(r'[a-z][a-z0-9-]*')
+
+
+def _require_name(kind: str, name: str) -> None:
+    """Model prefixes and login names share one format: what users type after `/login` or before `:`."""
+    if not _PROVIDER_PREFIX.fullmatch(name):
+        raise ValueError(
+            f'{kind} {name!r} must start with a lowercase letter, followed by lowercase letters, digits, and hyphens.'
+        )
+
+
+def _runs_already(prefix: str) -> bool:
+    """Whether CLAI or Pydantic AI already runs `prefix:` models, aliases such as `openai-chat` included.
+
+    `infer_model` accepts exactly the prefixes `infer_provider_class` knows, so that is the source of truth.
+    An unknown prefix raises `ValueError` without importing anything; a known one whose SDK is missing
+    raises `ImportError`, and is still taken.
+    """
+    if prefix in CLAI_PROVIDERS:
+        return True
+    try:
+        infer_provider_class(prefix)
+    except ValueError:
+        return False
+    except ImportError:
+        return True
+    return True
 
 
 HostEvent = SessionStart | SessionEnd | TurnStart | TurnEnd
@@ -256,6 +313,8 @@ class PluginHost(Generic[DepsT]):
         self._renderers: list[Renderer[AgentStreamEvent]] = []
         self._segments: list[StatusSegment] = []
         self._spinners: list[Spinner] = []
+        self._model_providers: list[ModelProvider] = []
+        self._logins: list[PluginLogin] = []
 
     @property
     def capabilities(self) -> list[AgentCapability[DepsT]]:
@@ -281,6 +340,16 @@ class PluginHost(Generic[DepsT]):
     def spinners(self) -> list[Spinner]:
         """Working animations added with `spinner`."""
         return list(self._spinners)
+
+    @property
+    def model_providers(self) -> list[ModelProvider]:
+        """Model prefixes added with `model_provider`."""
+        return list(self._model_providers)
+
+    @property
+    def logins(self) -> list[PluginLogin]:
+        """Sign-ins added with `login`."""
+        return list(self._logins)
 
     def summary(self) -> str:
         """One line for the `/plugins` menu."""
@@ -365,6 +434,39 @@ class PluginHost(Generic[DepsT]):
         spinner = make_spinner(name, frames, interval=interval, description=description, source='plugin')
         self._spinners.append(spinner)
         return spinner
+
+    def model_provider(
+        self, prefix: str, resolve: Callable[[str], Model], /, *, models: Iterable[str] = ()
+    ) -> ModelProvider:
+        """Run `PREFIX:NAME` models with `resolve`, and offer `models` in `/add_model` and `/set model`.
+
+        `resolve` gets NAME without the prefix. CLAI calls it in a worker thread before every run with
+        one of these models, so it may read the keyring; raise `UserError` saying how to set up when it
+        cannot build the model. A prefix Pydantic AI or CLAI already runs is rejected; when two plugins
+        register one prefix, the later one wins. Unloading the plugin removes the prefix, and a run with
+        a model under it then fails as an unknown provider until the plugin is enabled again.
+        """
+        _require_name('Model prefix', prefix)
+        if _runs_already(prefix):
+            raise ValueError(f'Model prefix {prefix!r} is a provider CLAI already runs; choose your own.')
+        provider = ModelProvider(prefix=prefix, resolve=resolve, models=tuple(models))
+        self._model_providers.append(provider)
+        return provider
+
+    def login(self, name: str, handler: Callable[[], Awaitable[str]], /) -> PluginLogin:
+        """Add `/login NAME`, which awaits `handler` and shows the message it returns.
+
+        For sign-ins that store credentials, such as the subscription behind a `model_provider`. Keep
+        secrets in the keyring, never in plugin settings, and raise `UserError` when signing in fails.
+        NAME cannot be a sign-in CLAI ships (`codex`, `copilot`, or their provider names); when two
+        plugins add one name, the later one wins. Unloading the plugin removes it.
+        """
+        _require_name('Login name', name)
+        if name in LOGINS or name in LOGIN_ALIASES:
+            raise ValueError(f'Login name {name!r} is a sign-in CLAI already has; choose your own.')
+        login = PluginLogin(name=name, handler=handler)
+        self._logins.append(login)
+        return login
 
     @overload
     def on(
