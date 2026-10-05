@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pydantic CLAI2 | Offsite onboarding</title>
+<style>
+:root { color-scheme: dark; --bg:#1a1b26; --panel:#24283b; --ink:#c0caf5; --muted:#a9b1d6; --pink:#f7768e; --blue:#7aa2f7; --green:#9ece6a; --purple:#bb9af7; }
+* { box-sizing:border-box; }
+body { margin:0; background:#10111b; color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,sans-serif; }
+.slide { width:100%; min-height:100vh; padding:5vh 6vw 9vh; background:radial-gradient(ellipse at top right,#302540 0,transparent 55%),var(--bg); display:flex; flex-direction:column; justify-content:center; position:relative; }
+.slide[hidden] { display:none; }
+.brand { position:absolute; top:4vh; left:6vw; font-size:14px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+.brand strong { color:var(--pink); }
+.eyebrow { color:var(--pink); font-size:16px; letter-spacing:.16em; text-transform:uppercase; margin:28px 0 12px; }
+h1 { font-size:clamp(38px,5.2vw,76px); letter-spacing:-.045em; line-height:1.08; margin:0 0 22px; max-width:1050px; }
+p { font-size:clamp(19px,2vw,29px); line-height:1.5; margin:8px 0 22px; }
+.muted { color:var(--muted); }
+.accent { color:var(--blue); }
+.grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+.card { background:var(--panel); border:1px solid #414868; border-radius:18px; padding:26px; }
+.card h2 { margin:0 0 14px; font-size:25px; }
+code,pre,kbd { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
+code { color:var(--green); }
+pre { background:#16161e; border:1px solid #414868; border-radius:12px; padding:20px; font-size:clamp(13px,1.4vw,20px); line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; margin:10px 0; color:var(--green); }
+.install pre { font-size:clamp(12px,1.25vw,18px); }
+.label { font-size:15px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
+.command { font-size:clamp(25px,3.8vw,54px); }
+.flow { display:flex; align-items:center; gap:24px; flex-wrap:wrap; margin:24px 0; }
+.arrow { color:var(--pink); font-size:42px; }
+kbd { display:inline-block; background:var(--panel); border:1px solid #565f89; border-bottom:5px solid #414868; border-radius:14px; padding:20px 26px; font-size:clamp(24px,4vw,58px); color:var(--ink); }
+.steps { list-style:none; padding:0; margin:8px 0; counter-reset:step; }
+.steps li { counter-increment:step; display:flex; gap:18px; align-items:baseline; font-size:clamp(18px,2vw,29px); line-height:1.5; margin:12px 0; }
+.steps li::before { content:counter(step,decimal-leading-zero); color:var(--pink); font-size:17px; flex-shrink:0; }
+.success { color:var(--green); }
+.swatches { display:flex; gap:14px; margin:24px 0; }
+.swatches span { width:58px; height:58px; border-radius:50%; background:var(--swatch); }
+.roadmap { grid-template-columns:repeat(3,1fr); margin:20px 0; }
+.roadmap .number { font-size:48px; color:var(--purple); margin-bottom:16px; }
+.roadmap p { font-size:22px; }
+.note { font-size:16px; color:var(--muted); margin-top:12px; }
+nav { position:fixed; bottom:0; left:0; right:0; background:#16161ef2; display:flex; align-items:center; gap:16px; padding:14px 6vw; border-top:1px solid #414868; }
+button { background:var(--panel); color:var(--ink); border:1px solid #565f89; border-radius:7px; padding:8px 14px; cursor:pointer; font:inherit; }
+button:hover,button:focus-visible { border-color:var(--pink); }
+button:disabled { opacity:.4; cursor:default; }
+#counter { font-variant-numeric:tabular-nums; }
+.help { margin-left:auto; color:var(--muted); font-size:14px; }
+@media (max-width:800px) { .slide { padding-top:85px; } .grid { grid-template-columns:1fr; } .help { display:none; } .brand { top:24px; } .card { padding:18px; } }
+@media print { @page { size:16in 9in; margin:0; } body { background:var(--bg); print-color-adjust:exact; -webkit-print-color-adjust:exact; } .slide,.slide[hidden] { display:flex; height:9in; min-height:0; width:16in; padding:0.8in 1in; break-after:page; } .slide:last-child { break-after:auto; } .brand { top:.35in; left:1in; } nav { display:none; } h1 { font-size:58px; } p,.steps li { font-size:25px; } .install pre { font-size:16px; } }
+</style>
+</head>
+<body>
+<main aria-label="Pydantic CLAI2 onboarding slides">
+<section class="slide install" aria-labelledby="slide1">
+<div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
+<div class="eyebrow">01 / Get installed</div>
+<h1 id="slide1">Your new terminal teammate.</h1>
+<p>Install the Claude Code plugin, then CLAI2 from <code>main</code>.</p>
+<div class="label">1. Claude Code plugin</div>
+<pre><code>curl -fsSL https://raw.githubusercontent.com/mpfaffenberger/pydantic-ai-claude-code/main/install.sh | sh</code></pre>
+<div class="label">2. CLAI2 + matching workspace packages</div>
+<pre><code>repo="git+https://github.com/pydantic/pydantic-ai.git@main"
+uv tool install --overrides /dev/stdin "pydantic-clai2 @ $repo#subdirectory=src/pydantic_clai2" &lt;&lt;EOF
+pydantic-ai-harness[coder] @ $repo#subdirectory=src/pydantic_ai_harness
+pydantic-ai-slim[anthropic,mcp,openai] @ $repo#subdirectory=pydantic_ai_slim
+pydantic-graph @ $repo#subdirectory=pydantic_graph
+EOF</code></pre>
+<div class="note">Prerequisites: uv + Git, macOS/Linux shell. Review the installer before running it. Then launch <code>clai2</code>.</div>
+</section>
+<section class="slide" aria-labelledby="slide2" hidden>
+<div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
+<div class="eyebrow">02 / Connect your subscriptions</div>
+<h1 id="slide2">Sign in. Twice.</h1>
+<div class="grid">
+<div class="card"><div class="label">First / Codex</div><pre class="command"><code>/login codex</code></pre><p class="muted">Complete the browser sign-in.</p></div>
+<div class="card"><div class="label">Then / Claude Code</div><pre class="command"><code>/login claude-code</code></pre><p class="muted">Complete the Claude sign-in.</p></div>
+</div>
+<p class="note">Codex also accepts <code>/login openai-codex</code>. If the Claude plugin lists <code>claude</code> instead, use <code>/login claude</code>. Run <code>/login</code> to see available connections.</p>
+</section>
+<section class="slide" aria-labelledby="slide3" hidden>
+<div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
+<div class="eyebrow">03 / Stay on the edge</div>
+<h1 id="slide3">Fresh from <span class="accent">main</span>.</h1>
+<p>Open the settings menu and choose the bleeding update channel.</p>
+<div class="flow"><code class="command">/set</code><span class="arrow">→</span><code class="command">updates.channel</code><span class="arrow">→</span><code class="command">bleeding</code></div>
+<pre><code>/set updates.channel bleeding
+/update</code></pre>
+<p class="note">The settings menu is <code>/set</code> in this checkout, not <code>/settings</code>. Bleeding follows main, so expect changes.</p>
+</section>
+<section class="slide" aria-labelledby="slide4" hidden>
+<div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
+<div class="eyebrow">04 / Make it yours</div>
+<h1 id="slide4">A beautiful terminal.<br><span class="accent">Tokyo Night.</span></h1>
+<p>Type <code>/theme</code>, browse the previews, and pick your favourite.</p>
+<div class="swatches" aria-label="Tokyo Night-inspired colours"><span style="--swatch:#7aa2f7"></span><span style="--swatch:#bb9af7"></span><span style="--swatch:#f7768e"></span><span style="--swatch:#9ece6a"></span><span style="--swatch:#7dcfff"></span></div>
+<pre class="command"><code>/theme tokyo_night</code></pre>
+<p class="muted">My recommendation: Tokyo Night. Obviously.</p>
+</section>
+<section class="slide" aria-labelledby="slide5" hidden>
+<div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
+<div class="eyebrow">05 / Observability, sorted</div>
+<h1 id="slide5">Light it up in Logfire.</h1>
+<ol class="steps">
+<li><span>Type <code>/plugins</code> → select <code>observability</code>.</span></li>
+<li><span>Press <code>c</code> to configure → <strong>Logfire project</strong>.</span></li>
+<li><span>Choose <strong>Self-hosted Logfire</strong> → enter <code>logfire-eu.pydantic.info</code>.</span></li>
+<li><span>Complete the browser OAuth sign-in.</span></li>
+<li><span>Pick <code>logfire/clai2</code>. <strong class="success">Woot!</strong></span></li>
+</ol>
+<p class="note">Check the destination before connecting: prompts, answers, and tool content are included by default.</p>
+</section>
+<section class="slide" aria-labelledby="slide6" hidden>
+<div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
+<div class="eyebrow">06 / Turn on speculation</div>
+<h1 id="slide6">Don't wait.<br><span class="accent">Speculate.</span></h1>
+<div class="flow"><kbd>Ctrl + X</kbd><span class="arrow">then</span><kbd>Ctrl + S</kbd></div>
+<p>Enable speculative execution in <strong>Monty</strong>.</p>
+<p class="muted">Eligible read calls can start while the model is still writing code.</p>
+<p class="note">Press the two chords in sequence. The shortcut toggles the mode; check the status row to confirm it is on.</p>
+</section>
+<section class="slide" aria-labelledby="slide7" hidden>
+<div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
+<div class="eyebrow">07 / Coming soon</div>
+<h1 id="slide7">We're just getting started.</h1>
+<div class="grid roadmap">
+<div class="card"><div class="number">01</div><h2>Multiple accounts</h2><p class="muted">Automatic failover when you run out of usage.</p></div>
+<div class="card"><div class="number">02</div><h2>Remote sandboxes</h2><p class="muted">Remote, sandboxed execution.</p></div>
+<div class="card"><div class="number">03</div><h2>And more!</h2><p class="muted">Help shape what's next.</p></div>
+</div>
+<p class="success">You're onboarded. Let's build something.</p>
+<p class="note">Roadmap preview, not features available today.</p>
+</section>
+</main>
+<nav aria-label="Slide controls"><button id="previous" aria-label="Previous slide">←</button><span id="counter" aria-live="polite"></span><button id="next" aria-label="Next slide">→</button><span class="help">← → / Space to navigate · F for fullscreen · Print to PDF</span><button id="fullscreen">Fullscreen</button></nav>
+<script>
+const slides = [...document.querySelectorAll('.slide')];
+const previous = document.querySelector('#previous');
+const next = document.querySelector('#next');
+let index = 0;
+function show(value) {
+  index = Math.max(0, Math.min(slides.length - 1, value));
+  slides.forEach((slide, position) => { slide.hidden = position !== index; });
+  document.querySelector('#counter').textContent = `${index + 1} / ${slides.length}`;
+  previous.disabled = index === 0;
+  next.disabled = index === slides.length - 1;
+  history.replaceState(null, '', `#${index + 1}`);
+  window.scrollTo(0, 0);
+}
+function fromHash() {
+  const value = Number(location.hash.slice(1));
+  show(Number.isInteger(value) && value > 0 ? value - 1 : 0);
+}
+async function fullscreen() {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch {
+    document.querySelector('#fullscreen').textContent = 'Use browser fullscreen';
+  }
+}
+previous.addEventListener('click', () => show(index - 1));
+next.addEventListener('click', () => show(index + 1));
+document.querySelector('#fullscreen').addEventListener('click', fullscreen);
+document.addEventListener('keydown', (event) => {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.target.closest('button, a, input, textarea, select')) return;
+  if (['ArrowRight', 'PageDown', ' '].includes(event.key)) { event.preventDefault(); show(index + 1); }
+  else if (['ArrowLeft', 'PageUp'].includes(event.key)) { event.preventDefault(); show(index - 1); }
+  else if (event.key === 'Home') { event.preventDefault(); show(0); }
+  else if (event.key === 'End') { event.preventDefault(); show(slides.length - 1); }
+  else if (event.key.toLowerCase() === 'f') fullscreen();
+});
+window.addEventListener('hashchange', fromHash);
+fromHash();
+</script>
+</body>
+</html>
