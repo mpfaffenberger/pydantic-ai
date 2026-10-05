@@ -5,42 +5,46 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pydantic CLAI2 | Offsite onboarding</title>
 <style>
-:root { color-scheme: dark; --bg:#1a1b26; --panel:#24283b; --ink:#c0caf5; --muted:#a9b1d6; --pink:#f7768e; --blue:#7aa2f7; --green:#9ece6a; --purple:#bb9af7; }
+/* Pydantic marketing palette: paraffin, lithium, ivory, aqua, and purple. */
+:root { color-scheme: dark; --bg:#1d0214; --panel:#280f20; --ink:#fbffea; --muted:#c8b6c4; --pink:#e520e9; --aqua:#77ffd8; --purple:#9b77ff; --border:#49353f; --terminal:#160510; }
 * { box-sizing:border-box; }
-body { margin:0; background:#10111b; color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,sans-serif; }
-.slide { width:100%; min-height:100vh; padding:5vh 6vw 9vh; background:radial-gradient(ellipse at top right,#302540 0,transparent 55%),var(--bg); display:flex; flex-direction:column; justify-content:center; position:relative; }
+body { margin:0; background:var(--bg); color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,sans-serif; }
+.slide { width:100%; min-height:100vh; padding:5vh 6vw 9vh; background:radial-gradient(ellipse at top right,#3e042b 0,transparent 60%),var(--bg); display:flex; flex-direction:column; justify-content:center; position:relative; }
+.slide::before { content:''; position:absolute; top:0; left:0; right:0; height:4px; background:linear-gradient(90deg,var(--pink),var(--purple),var(--aqua)); }
 .slide[hidden] { display:none; }
-.brand { position:absolute; top:4vh; left:6vw; font-size:14px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
-.brand strong { color:var(--pink); }
+.brand { position:absolute; top:4vh; left:6vw; display:flex; align-items:center; gap:16px; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); }
+.brand strong { display:inline-flex; align-items:center; gap:10px; color:var(--ink); font-size:23px; letter-spacing:-.04em; text-transform:none; }
+/* Pydantic publisher mark, embedded so the deck works offline. */
+.brand strong::before { content:''; width:32px; height:32px; background:center / contain no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23e520e9' d='M22.906 17.109 12.256 2.346c-.335-.461-1.107-.461-1.44 0L.167 17.109A.89.89 0 0 0 .61 18.47l10.65 3.485h.001a.9.9 0 0 0 .55 0h.002l10.65-3.485a.88.88 0 0 0 .567-.57.88.88 0 0 0-.125-.792zM11.537 4.38l4.269 5.918-3.992-1.306c-.031-.01-.064-.009-.095-.016a1 1 0 0 0-.091-.015c-.031-.004-.06-.016-.091-.016-.03 0-.06.012-.09.016a1 1 0 0 0-.092.015c-.032.006-.064.006-.092.016L7.295 10.29l-.025.008 4.269-5.918zm-6.031 8.362 4.647-1.522.496-.162v8.832l-8.332-2.727zm6.92 7.147v-8.83l5.143 1.683 3.189 4.418z'/%3E%3C/svg%3E"); }
 .eyebrow { color:var(--pink); font-size:16px; letter-spacing:.16em; text-transform:uppercase; margin:28px 0 12px; }
 h1 { font-size:clamp(38px,5.2vw,76px); letter-spacing:-.045em; line-height:1.08; margin:0 0 22px; max-width:1050px; }
 p { font-size:clamp(19px,2vw,29px); line-height:1.5; margin:8px 0 22px; }
 .muted { color:var(--muted); }
-.accent { color:var(--blue); }
+.accent { color:var(--pink); }
 .grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
-.card { background:var(--panel); border:1px solid #414868; border-radius:18px; padding:26px; }
+.card { background:var(--panel); border:1px solid var(--border); border-top:3px solid var(--pink); border-radius:18px; padding:26px; }
 .card h2 { margin:0 0 14px; font-size:25px; }
 code,pre,kbd { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
-code { color:var(--green); }
-pre { background:#16161e; border:1px solid #414868; border-radius:12px; padding:20px; font-size:clamp(13px,1.4vw,20px); line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; margin:10px 0; color:var(--green); }
+code { color:var(--aqua); }
+pre { background:var(--terminal); border:1px solid var(--border); border-radius:12px; padding:20px; font-size:clamp(13px,1.4vw,20px); line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; margin:10px 0; color:var(--aqua); }
 .install pre { font-size:clamp(12px,1.25vw,18px); }
 .label { font-size:15px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
 .command { font-size:clamp(25px,3.8vw,54px); }
 .flow { display:flex; align-items:center; gap:24px; flex-wrap:wrap; margin:24px 0; }
 .arrow { color:var(--pink); font-size:42px; }
-kbd { display:inline-block; background:var(--panel); border:1px solid #565f89; border-bottom:5px solid #414868; border-radius:14px; padding:20px 26px; font-size:clamp(24px,4vw,58px); color:var(--ink); }
+kbd { display:inline-block; background:var(--panel); border:1px solid var(--pink); border-bottom:5px solid var(--pink); border-radius:14px; padding:20px 26px; font-size:clamp(24px,4vw,58px); color:var(--ink); }
 .steps { list-style:none; padding:0; margin:8px 0; counter-reset:step; }
 .steps li { counter-increment:step; display:flex; gap:18px; align-items:baseline; font-size:clamp(18px,2vw,29px); line-height:1.5; margin:12px 0; }
 .steps li::before { content:counter(step,decimal-leading-zero); color:var(--pink); font-size:17px; flex-shrink:0; }
-.success { color:var(--green); }
+.success { color:var(--aqua); }
 .swatches { display:flex; gap:14px; margin:24px 0; }
 .swatches span { width:58px; height:58px; border-radius:50%; background:var(--swatch); }
 .roadmap { grid-template-columns:repeat(3,1fr); margin:20px 0; }
 .roadmap .number { font-size:48px; color:var(--purple); margin-bottom:16px; }
 .roadmap p { font-size:22px; }
 .note { font-size:16px; color:var(--muted); margin-top:12px; }
-nav { position:fixed; bottom:0; left:0; right:0; background:#16161ef2; display:flex; align-items:center; gap:16px; padding:14px 6vw; border-top:1px solid #414868; }
-button { background:var(--panel); color:var(--ink); border:1px solid #565f89; border-radius:7px; padding:8px 14px; cursor:pointer; font:inherit; }
+nav { position:fixed; bottom:0; left:0; right:0; background:var(--terminal); display:flex; align-items:center; gap:16px; padding:14px 6vw; border-top:1px solid var(--border); }
+button { background:var(--panel); color:var(--ink); border:1px solid var(--border); border-radius:7px; padding:8px 14px; cursor:pointer; font:inherit; }
 button:hover,button:focus-visible { border-color:var(--pink); }
 button:disabled { opacity:.4; cursor:default; }
 #counter { font-variant-numeric:tabular-nums; }
