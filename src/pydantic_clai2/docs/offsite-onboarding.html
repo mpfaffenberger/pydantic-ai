@@ -27,7 +27,7 @@ p { font-size:clamp(19px,2vw,29px); line-height:1.5; margin:8px 0 22px; }
 code,pre,kbd { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; }
 code { color:var(--aqua); }
 pre { background:var(--terminal); border:1px solid var(--border); border-radius:12px; padding:20px; font-size:clamp(13px,1.4vw,20px); line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; margin:10px 0; color:var(--aqua); }
-.install pre { font-size:clamp(12px,1.25vw,18px); }
+.install pre { font-size:clamp(12px,1.25vw,18px); line-height:1.45; padding:16px; }
 .label { font-size:15px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
 .command { font-size:clamp(25px,3.8vw,54px); }
 .login-options { grid-template-columns:repeat(3,minmax(0,1fr)); }
@@ -72,7 +72,7 @@ pydantic-ai-harness[coder] @ $repo#subdirectory=src/pydantic_ai_harness
 pydantic-ai-slim[anthropic,mcp,openai] @ $repo#subdirectory=pydantic_ai_slim
 pydantic-graph @ $repo#subdirectory=pydantic_graph
 EOF</code></pre>
-<div class="note">Requires uv + Git and a macOS/Linux shell. Overrides keep the development packages in sync. Review the plugin installer before running it, then launch <code>clai2</code>. Slide 2 enables future updates from <code>main</code>.</div>
+<div class="note">Requires uv + Git, macOS/Linux. Overrides keep development packages in sync. Review the plugin installer before running it. Launch <code>clai2</code>; slide 2 enables future updates.</div>
 </section>
 <section class="slide" aria-labelledby="slide2" hidden>
 <div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
