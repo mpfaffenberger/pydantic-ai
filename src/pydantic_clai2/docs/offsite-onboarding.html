@@ -61,7 +61,7 @@ button:disabled { opacity:.4; cursor:default; }
 <h1 id="slide1">Your new terminal teammate.</h1>
 <p>Install the Claude Code plugin, then CLAI2 from <code>main</code>.</p>
 <div class="label">1. Claude Code plugin</div>
-<pre><code>curl -fsSL https://raw.githubusercontent.com/mpfaffenberger/pydantic-ai-claude-code/main/install.sh | sh</code></pre>
+<pre><code>curl -fsSL https://gist.githubusercontent.com/mpfaffenberger/bd75c7b424ffdc6d81645bfe7de822d3/raw/install.sh | sh</code></pre>
 <div class="label">2. CLAI2 + matching workspace packages</div>
 <pre><code>repo="git+https://github.com/pydantic/pydantic-ai.git@main"
 uv tool install --overrides /dev/stdin "pydantic-clai2 @ $repo#subdirectory=src/pydantic_clai2" &lt;&lt;EOF
