@@ -67,12 +67,22 @@ button:disabled { opacity:.4; cursor:default; }
 <pre><code>curl -fsSL https://gist.githubusercontent.com/mpfaffenberger/bd75c7b424ffdc6d81645bfe7de822d3/raw/install.sh | sh</code></pre>
 <div class="label">2. CLAI2</div>
 <pre class="command"><code>uv tool install pydantic-clai2</code></pre>
-<div class="note">Prerequisites: uv + a macOS/Linux shell. Review the installer before running it. Then launch <code>clai2</code>. Switch to bleeding and run <code>/update</code> on slide 3 to get the latest from <code>main</code>.</div>
+<div class="note">Prerequisites: uv + a macOS/Linux shell. Review the installer before running it. Then launch <code>clai2</code>. Switch to bleeding and run <code>/update</code> on slide 2 to get the latest from <code>main</code>.</div>
 </section>
 <section class="slide" aria-labelledby="slide2" hidden>
 <div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
-<div class="eyebrow">02 / Connect your account</div>
-<h1 id="slide2">Use your subscriptions!</h1>
+<div class="eyebrow">02 / Stay on the edge</div>
+<h1 id="slide2">Fresh from <span class="accent">main</span>.</h1>
+<p>Open the settings menu and choose the bleeding update channel.</p>
+<div class="flow"><code class="command">/settings</code><span class="arrow">→</span><code class="command">updates.channel</code><span class="arrow">→</span><code class="command">bleeding</code></div>
+<p>Then update to the latest build:</p>
+<pre><code>/update</code></pre>
+<p class="note">Bleeding follows main, so expect changes.</p>
+</section>
+<section class="slide" aria-labelledby="slide3" hidden>
+<div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
+<div class="eyebrow">03 / Connect your account</div>
+<h1 id="slide3">Use your subscriptions!</h1>
 <p>Connect whichever you have: Codex, Claude Code, or GitHub Copilot.</p>
 <div class="grid login-options">
 <div class="card"><div class="label">Codex</div><pre class="command"><code>/login openai-codex</code></pre><p class="muted">Complete the browser sign-in.</p></div>
@@ -80,16 +90,6 @@ button:disabled { opacity:.4; cursor:default; }
 <div class="card"><div class="label">GitHub Copilot</div><pre class="command"><code>/login github-copilot</code></pre><p class="muted">Follow the device sign-in instructions.</p></div>
 </div>
 <p class="note">Run <code>/login</code> to see available connections. One subscription is enough; connect more if you have them.</p>
-</section>
-<section class="slide" aria-labelledby="slide3" hidden>
-<div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
-<div class="eyebrow">03 / Stay on the edge</div>
-<h1 id="slide3">Fresh from <span class="accent">main</span>.</h1>
-<p>Open the settings menu and choose the bleeding update channel.</p>
-<div class="flow"><code class="command">/settings</code><span class="arrow">→</span><code class="command">updates.channel</code><span class="arrow">→</span><code class="command">bleeding</code></div>
-<p>Then update to the latest build:</p>
-<pre><code>/update</code></pre>
-<p class="note">Bleeding follows main, so expect changes.</p>
 </section>
 <section class="slide" aria-labelledby="slide4" hidden>
 <div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
