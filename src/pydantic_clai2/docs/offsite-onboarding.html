@@ -62,12 +62,17 @@ button:disabled { opacity:.4; cursor:default; }
 <div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
 <div class="eyebrow">01 / Get installed</div>
 <h1 id="slide1">Your new terminal teammate.</h1>
-<p>Install CLAI2. Add the Claude Code plugin if you'll use Claude.</p>
+<p>Install CLAI2 from GitHub <code>main</code>. Add the plugin if you'll use Claude.</p>
 <div class="label">Optional / Claude Code plugin</div>
 <pre><code>curl -fsSL https://gist.githubusercontent.com/mpfaffenberger/bd75c7b424ffdc6d81645bfe7de822d3/raw/install.sh | sh</code></pre>
-<div class="label">2. CLAI2</div>
-<pre class="command"><code>uv tool install pydantic-clai2</code></pre>
-<div class="note">Prerequisites: uv + a macOS/Linux shell. Review the installer before running it. Then launch <code>clai2</code>. Switch to bleeding and run <code>/update</code> on slide 2 to get the latest from <code>main</code>.</div>
+<div class="label">CLAI2 / GitHub main</div>
+<pre><code>repo="git+https://github.com/pydantic/pydantic-ai.git@main"
+uv tool install "$repo#subdirectory=src/pydantic_clai2" --overrides /dev/stdin &lt;&lt;EOF
+pydantic-ai-harness[coder] @ $repo#subdirectory=src/pydantic_ai_harness
+pydantic-ai-slim[anthropic,mcp,openai] @ $repo#subdirectory=pydantic_ai_slim
+pydantic-graph @ $repo#subdirectory=pydantic_graph
+EOF</code></pre>
+<div class="note">Requires uv + Git and a macOS/Linux shell. Overrides keep the development packages in sync. Review the plugin installer before running it, then launch <code>clai2</code>. Slide 2 enables future updates from <code>main</code>.</div>
 </section>
 <section class="slide" aria-labelledby="slide2" hidden>
 <div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
