@@ -30,8 +30,9 @@ pre { background:var(--terminal); border:1px solid var(--border); border-radius:
 .install pre { font-size:clamp(12px,1.25vw,18px); }
 .label { font-size:15px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
 .command { font-size:clamp(25px,3.8vw,54px); }
+.login-options { grid-template-columns:repeat(3,minmax(0,1fr)); }
 .login-options .card { min-width:0; container-type:inline-size; }
-.login-options .command { font-size:clamp(14px,6.5cqw,36px); white-space:nowrap; overflow-wrap:normal; }
+.login-options .command { font-size:clamp(14px,6cqw,36px); white-space:nowrap; overflow-wrap:normal; }
 .flow { display:flex; align-items:center; gap:24px; flex-wrap:wrap; margin:24px 0; }
 .arrow { color:var(--pink); font-size:42px; }
 kbd { display:inline-block; background:var(--panel); border:1px solid var(--pink); border-bottom:5px solid var(--pink); border-radius:14px; padding:20px 26px; font-size:clamp(24px,4vw,58px); color:var(--ink); }
@@ -71,13 +72,14 @@ button:disabled { opacity:.4; cursor:default; }
 <section class="slide" aria-labelledby="slide2" hidden>
 <div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
 <div class="eyebrow">02 / Connect your account</div>
-<h1 id="slide2">Use the subscription you have.</h1>
-<p>Choose Codex or Claude Code. You don't need both.</p>
+<h1 id="slide2">Use your subscriptions!</h1>
+<p>Connect whichever you have: Codex, Claude Code, or GitHub Copilot.</p>
 <div class="grid login-options">
-<div class="card"><div class="label">Have a Codex subscription?</div><pre class="command"><code>/login codex</code></pre><p class="muted">Complete the browser sign-in.</p></div>
-<div class="card"><div class="label">Have a Claude subscription?</div><pre class="command"><code>/login claude-code</code></pre><p class="muted">Install the optional plugin, then sign in.</p></div>
+<div class="card"><div class="label">Codex</div><pre class="command"><code>/login codex</code></pre><p class="muted">Complete the browser sign-in.</p></div>
+<div class="card"><div class="label">Claude Code</div><pre class="command"><code>/login claude-code</code></pre><p class="muted">Install the optional plugin, then sign in.</p></div>
+<div class="card"><div class="label">GitHub Copilot</div><pre class="command"><code>/login github-copilot</code></pre><p class="muted">Follow the device sign-in instructions.</p></div>
 </div>
-<p class="note">Run <code>/login</code> to see available connections. Have both? You can connect both.</p>
+<p class="note">Run <code>/login</code> to see available connections. One subscription is enough; connect more if you have them.</p>
 </section>
 <section class="slide" aria-labelledby="slide3" hidden>
 <div class="brand"><strong>Pydantic</strong> / Offsite / CLAI2</div>
