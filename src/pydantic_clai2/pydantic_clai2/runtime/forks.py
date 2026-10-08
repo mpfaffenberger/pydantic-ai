@@ -19,6 +19,7 @@ import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Generic, Literal, TypeVar
 
 import anyio
@@ -31,9 +32,10 @@ from pydantic_ai import AgentStreamEvent, PartStartEvent, TextPart
 from pydantic_ai.messages import ModelMessage
 from pydantic_clai2.errors import error_message
 from pydantic_clai2.plugins import HostEvent, TurnEnd, TurnStart
-from pydantic_clai2.runtime._session import Session
+from pydantic_clai2.runtime._session import Session, SteeringPriority
 from pydantic_clai2.ui.rendering import theme
 from pydantic_clai2.ui.rendering._rendering import StreamRenderer
+from pydantic_clai2.ui.rendering.agent_streams import AgentStream, AgentStreams
 from pydantic_clai2.ui.rendering.status import Status
 from pydantic_clai2.ui.rendering.tool_output import terminal_text
 
@@ -45,7 +47,8 @@ ForkStatus = Literal['running', 'done', 'failed', 'cancelled']
 USAGE = (
     'Usage: /fork [@model] PROMPT   run a copy of this conversation in the background\n'
     '       /fork cancel ID         stop a running fork\n'
-    '       /forks                  list forks'
+    '       /forks                  list forks\n'
+    '       /forks live             watch, steer, and queue any agent (or Ctrl+X Ctrl+A)'
 )
 _STATUS_STYLES: dict[ForkStatus, str] = {
     'running': theme.WARNING,
@@ -113,10 +116,12 @@ class Forks(Generic[DepsT, OutputT]):
         models: Callable[[], Iterable[str]] = lambda: (),
         fire: Callable[[HostEvent], Awaitable[None]] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        agents: AgentStreams | None = None,
     ) -> None:
         """Bind the foreground history, child-session factory, and the shell's plugin hooks.
 
         `fire` receives each fork's `TurnStart` and `TurnEnd`, like a foreground turn.
+        `agents` receives each fork's transcript for `/forks live`.
         """
         self.console = console
         self._history = history
@@ -126,6 +131,9 @@ class Forks(Generic[DepsT, OutputT]):
         self._clock = clock
         self._store_ready = False
         self._records: dict[int, ForkRecord] = {}
+        self._sessions: dict[int, Session[DepsT, OutputT]] = {}
+        self._streams: dict[int, AgentStream] = {}
+        self._agents = agents if agents is not None else AgentStreams()
         self._busy = 0
         self._idle = asyncio.Event()
         self._idle.set()
@@ -191,17 +199,7 @@ class Forks(Generic[DepsT, OutputT]):
 
         A plugin that cancels or rejects the prompt refuses the fork, as it would refuse a turn.
         """
-        begin = TurnStart(text=prompt)
-        # Every `turn_start` gets its `turn_end`, as in the foreground, so plugins can close per-turn state.
-        try:
-            await self._fire(begin)
-        except Exception as exc:
-            await self._fire(TurnEnd(text=begin.text, outcome='failed', error=exc))
-            raise
-        if begin.cancelled:
-            await self._fire(TurnEnd(text=begin.text, outcome='cancelled'))
-            raise ValueError(f'Fork cancelled by a plugin: {begin.cancel_reason or "no reason given"}')
-        prompt = begin.text
+        prompt = await self._begin(prompt)
         try:
             session = await self._prepare(model)
         except Exception as exc:
@@ -209,11 +207,25 @@ class Forks(Generic[DepsT, OutputT]):
             raise
         fork_id = len(self._records) + 1
         progress = Status(activity='starting')
+        stream = self._agents.add(
+            AgentStream(
+                key=f'fork-{fork_id}',
+                # Only a chosen model is worth the room; the default shows in `/forks`.
+                title=f'fork #{fork_id} {session.model}' if session.model else f'fork #{fork_id}',
+                activity=partial(self._activity, fork_id),
+                send=partial(self.send, fork_id),
+                stop=partial(self.stop, fork_id),
+            )
+        )
+        stream.prompt(prompt)
+        self._streams[fork_id] = stream
 
         async def observe(event: AgentStreamEvent) -> None:
             progress.observe(event)
+            stream.observe(event)
 
         session.on_stream_event = observe
+        self._sessions[fork_id] = session
         record = ForkRecord(
             fork_id=fork_id,
             model=session.model or 'agent default',
@@ -227,6 +239,58 @@ class Forks(Generic[DepsT, OutputT]):
             f'fork #{fork_id} ({record.model}) started in the background. '
             'Results print when it finishes; /forks shows status.'
         )
+
+    async def _begin(self, prompt: str) -> str:
+        """Fire `turn_start` and return its (possibly rewritten) prompt, or raise if a plugin refuses it."""
+        begin = TurnStart(text=prompt)
+        # Every `turn_start` gets its `turn_end`, as in the foreground, so plugins can close per-turn state.
+        try:
+            await self._fire(begin)
+        except Exception as exc:
+            await self._fire(TurnEnd(text=begin.text, outcome='failed', error=exc))
+            raise
+        if begin.cancelled:
+            await self._fire(TurnEnd(text=begin.text, outcome='cancelled'))
+            raise ValueError(f'Fork cancelled by a plugin: {begin.cancel_reason or "no reason given"}')
+        return begin.text
+
+    def _activity(self, fork_id: int) -> str:
+        record = self._records[fork_id]
+        return record.progress.activity if record.status == 'running' else record.status
+
+    def send(self, fork_id: int, text: str, priority: SteeringPriority) -> str:
+        """`/forks live` input: steer or queue for a running fork, or continue a finished one."""
+        record, session, stream = self._records[fork_id], self._sessions[fork_id], self._streams[fork_id]
+        if record.status != 'running' and not record.task.done():
+            return f'{record.tag} is finished; its result prints after this turn. Send again then.'
+        if record.status != 'running':
+            record.status, record.started_at, record.elapsed = 'running', self._clock(), None
+            record.prompt, record.announced = text, False
+            record.progress.activity = 'starting'
+            record.task = asyncio.create_task(self._follow_up(fork_id, text), name=f'fork-{fork_id}')
+            stream.prompt(text)
+            return f'{record.tag} continues with your message.'
+        if not session.steer(text, priority=priority):
+            return f'{record.tag} is not accepting input yet. Try again in a moment.'
+        stream.prompt(text, label='steer' if priority == 'asap' else 'queued')
+        return f'Steering sent to {record.tag}.' if priority == 'asap' else f'Queued for {record.tag}.'
+
+    async def _follow_up(self, fork_id: int, text: str) -> None:
+        session = self._sessions[fork_id]
+        try:
+            prompt = await self._begin(text)
+        except asyncio.CancelledError:
+            # Cancelled while a `turn_start` hook ran: settle the record, or it stays running forever.
+            record = self._finish(fork_id, 'cancelled', session)
+            self._notify(f'{record.tag} cancelled after {record.elapsed:.1f}s', theme.MUTED)
+            with move_on_after(5, shield=True):
+                await self._fire(TurnEnd(text=text, outcome='cancelled'))
+            raise
+        except Exception as exc:
+            record = self._finish(fork_id, 'failed', session)
+            self._notify(f'{record.tag} could not continue: {error_message(exc)}', theme.ERROR)
+            return
+        await self._run(fork_id, session, prompt)
 
     async def _prepare(self, model: str | None) -> Session[DepsT, OutputT]:
         session = self._spawn(model, self._snapshot())
@@ -306,7 +370,7 @@ class Forks(Generic[DepsT, OutputT]):
     def rows(self, glyph: str) -> tuple[str, ...]:
         """Live editor rows: one per running fork, and one per finished fork still waiting to print.
 
-        `glyph` is the current frame of the user's `/spinner`, so forks animate with the main turn.
+        `glyph` is the current frame of the agent spinner, the same one the live view's roster shows.
         """
         reset, muted = '\x1b[0m', theme.sgr(theme.MUTED)
         rows: list[str] = []
@@ -344,6 +408,10 @@ class Forks(Generic[DepsT, OutputT]):
         record.task.cancel()
         return f'Cancelling {record.tag}...'
 
+    async def stop(self, fork_id: int) -> str:
+        """The live view's stop key: `/fork cancel ID`."""
+        return self.cancel(str(fork_id))
+
     def cancel_running(self) -> int:
         """Cancel every running fork, as a cancelled turn does. Returns how many were running."""
         running = [record for record in self._records.values() if record.status == 'running']
@@ -361,7 +429,7 @@ class Forks(Generic[DepsT, OutputT]):
     def status_command(self, args: list[str]) -> str:
         """`/forks`: print the table and return the totals line."""
         if args:
-            raise ValueError('Usage: /forks')
+            raise ValueError('Usage: /forks [live]')
         if not self._records:
             return 'No forks yet. Start one with /fork [@model] PROMPT.'
         table = Table(title='Forks', header_style=theme.color(theme.ACCENT), border_style=theme.color(theme.MUTED))

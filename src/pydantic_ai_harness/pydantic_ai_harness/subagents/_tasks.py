@@ -7,8 +7,8 @@ import copy
 import logging
 import re
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping, Sequence
+from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,7 +21,7 @@ from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResult, AgentStreamEvent, RunContext, capture_run_messages
 from pydantic_ai.capabilities import AbstractCapability, WrapRunHandler, on_event
 from pydantic_ai.exceptions import ModelRetry, RunCancelled
-from pydantic_ai.messages import EnqueuedMessagesEvent, ModelMessage, SystemPromptPart
+from pydantic_ai.messages import EnqueuedMessagesEvent, ModelMessage, SystemPromptPart, UserContent
 from pydantic_ai.output import OutputContext
 from pydantic_ai_harness.step_persistence import StepPersistence, StepStore
 from pydantic_ai_harness.subagents._events import DelegationOutcome
@@ -76,6 +76,8 @@ class DelegationTaskEvent:
 
 
 Observer = Callable[[DelegationTaskEvent], Awaitable[None]]
+SteeringPriority = Literal['asap', 'when_idle']
+Steer = Callable[[Sequence[UserContent], SteeringPriority], object]
 Runner = Callable[[DelegationTask], Awaitable[str]]
 _ADAPTER = TypeAdapter(DelegationTask)
 _SAFE_ID = re.compile(r'[0-9a-f]{32}\Z')
@@ -116,6 +118,7 @@ class DelegationTasks:
         self._released: dict[str, asyncio.Event] = {}
         self._stopping: set[str] = set()
         self._receivers: dict[tuple[str, str | None], Callable[[SystemPromptPart], str | None]] = {}
+        self._steering: dict[str, Steer] = {}
         self._queued: dict[str, tuple[str, int]] = {}
         self._save_locks: dict[str, anyio.Lock] = {}
         self._open = False
@@ -443,6 +446,28 @@ class DelegationTasks:
                 record.delivered = True
                 await self.save(record)
 
+    def steer(self, task_id: str, content: Sequence[UserContent], *, priority: SteeringPriority = 'asap') -> bool:
+        """Deliver user input to a running child, or decline when it is not accepting input.
+
+        `'asap'` reaches the child at its next step; `'when_idle'` is a follow-up it reads
+        before it would otherwise finish. Unlike task reports, this is the user's own input.
+        """
+        deliver = self._steering.get(task_id)
+        if deliver is None or not content:
+            return False
+        deliver(content, priority)
+        return True
+
+    @contextmanager
+    def steering(self, *, task_id: str, enqueue: Steer) -> Generator[None]:
+        """Accept `steer` input for a child only for the lifetime of its run."""
+        self._steering[task_id] = enqueue
+        try:
+            yield
+        finally:
+            # A task runs once at a time; `delegate` refuses to resume a running one.
+            self._steering.pop(task_id, None)
+
     async def wait_children(self, task_id: str) -> None:
         """Wait for direct children before the child's final output can settle."""
         workers = [
@@ -470,10 +495,18 @@ class DelegationReports(AbstractCapability[object]):
         self.id = 'delegation_reports'
 
     async def wrap_run(self, ctx: RunContext[object], *, handler: WrapRunHandler) -> AgentRunResult[object]:
-        with self.owner.receiving(
-            conversation_id=self.conversation_id,
-            parent_id=self.task_id,
-            enqueue=lambda part: ctx.enqueue(part, priority=self.priority),
+        with (
+            self.owner.receiving(
+                conversation_id=self.conversation_id,
+                parent_id=self.task_id,
+                enqueue=lambda part: ctx.enqueue(part, priority=self.priority),
+            ),
+            self.owner.steering(
+                task_id=self.task_id,
+                enqueue=lambda content, priority: ctx.enqueue(*content, priority=priority),
+            )
+            if self.task_id is not None
+            else nullcontext(),
         ):
             return await handler()
 

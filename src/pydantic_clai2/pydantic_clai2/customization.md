@@ -693,8 +693,8 @@ to stderr with a nonzero exit status. `-m` also works in the interactive CLI.
 
 ## Managed delegation UI
 
-Interactive stock agents use harness `DelegationTasks`: `/tasks` inspects children,
-Enter opens a full-width live transcript, `b` backgrounds, and `x` stops the selected
+Interactive stock agents use harness `DelegationTasks`: `/tasks` opens the live agent
+view on the children, where `b` backgrounds and `x` stops the selected
 tree. Ctrl+B backgrounds foreground children. `/tasks resume ID` is explicit user
 authorization to resume a general-purpose/custom child with its independent history.
 Explore and Plan are read-only, inherit the selected model, and cannot resume.

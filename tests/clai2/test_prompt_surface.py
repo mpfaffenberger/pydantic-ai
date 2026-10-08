@@ -344,3 +344,59 @@ def test_hold_ending_mid_resize_replays_once_the_viewport_settles() -> None:
     now = 0.3
     surface.paint(ROWS)
     assert 'held\n' in output.getvalue()
+
+
+def test_cover_owns_the_transcript_rows_until_it_closes() -> None:
+    screen = Screen()
+    calls: list[tuple[int, int, bool]] = []
+
+    def draw(width: int, height: int, full: bool) -> str:
+        calls.append((width, height, full))
+        return '\x1b[1;1HCOVER' if full else ''
+
+    screen.surface.paint_cover(draw)
+    assert calls == []
+    screen.surface.write('transcript\n')
+    with screen.surface.covered():
+        screen.surface.paint_cover(draw)
+        screen.surface.paint_cover(draw)
+        assert calls == [(80, 20, True), (80, 20, False)]
+        assert screen.terminal.lines()[0].startswith('COVER')
+        screen.surface.write('held\n')
+        assert 'held' not in screen.terminal.lines()
+        # A resize waits for the size to settle, then the cover repaints in full.
+        screen.terminal.resize(width=60, height=24)
+        screen.surface.paint_cover(draw)
+        assert len(calls) == 2
+        screen.settle()
+        screen.surface.paint_cover(draw)
+        assert calls[-1] == (60, 20, True)
+        # A taller editor moves the rows the cover painted.
+        screen.surface.paint((*ROWS, 'POPUP'))
+        screen.surface.paint_cover(draw)
+        assert calls[-1] == (60, 19, True)
+    lines = screen.terminal.lines()
+    assert not any('COVER' in line for line in lines) and lines.index('transcript') < lines.index('held')
+
+
+def test_cover_waits_for_a_resize_or_a_released_terminal() -> None:
+    screen = Screen()
+    calls: list[bool] = []
+
+    def draw(width: int, height: int, full: bool) -> str:
+        calls.append(full)
+        return ''
+
+    screen.surface.write('kept\n')
+    with screen.surface.covered():
+        screen.surface.write('held\n')
+        screen.terminal.resize(width=70, height=24)
+        screen.surface.paint_cover(draw)
+    # Closed while the size was settling: the rebuild waits for the next settled paint.
+    assert calls == [] and 'held' not in screen.terminal.lines()
+    screen.settle()
+    assert 'held' in screen.terminal.lines()
+    screen.surface.release()
+    with screen.surface.covered():
+        screen.surface.paint_cover(draw)
+    assert calls == []

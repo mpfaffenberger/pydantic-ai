@@ -1,16 +1,13 @@
 """Task rendering, live inspection, and stock-agent integration."""
 
+import asyncio
 import io
 import time
 from collections.abc import AsyncIterable, AsyncIterator
-from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
-from rich.cells import cell_len
 from rich.console import Console
-from termflow.tui import MenuItem
-from termflow.tui.menu import Menu, MenuResult
 
 from pydantic_ai import Agent, AgentStreamEvent, RunContext
 from pydantic_ai.messages import (
@@ -29,6 +26,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls
 from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.subagents import (
     DelegationEndEvent,
+    DelegationReports,
     DelegationStartEvent,
     DelegationTask,
     DelegationTaskEvent,
@@ -39,8 +37,7 @@ from pydantic_clai2._app import create_stock_agent
 from pydantic_clai2.runtime._session import Session
 from pydantic_clai2.runtime.sandbox_calls import DelegationToolCallEvent
 from pydantic_clai2.runtime.tasks import TaskPresentation, Tasks, task_row, task_tree
-from pydantic_clai2.ui.menus.field_menu import Runners
-from pydantic_clai2.ui.menus.task_menu import TaskDetail, TaskMenu, open_tasks, run_tasks
+from pydantic_clai2.ui.rendering.agent_streams import SentPrompt
 
 
 def task(*, task_id: str = 'a' * 32, parent_id: str | None = None) -> DelegationTask:
@@ -61,37 +58,6 @@ def test_panel_tree_and_completion_retention() -> None:
     assert '[bbbbbbbb]' in '\n'.join(ui.rows('*'))
     child.finished_at -= 31
     assert '[bbbbbbbb]' not in '\n'.join(ui.rows('*'))
-
-
-def test_live_menu_keeps_selected_child_after_completion_and_insert() -> None:
-    parent, sibling = task(), task(task_id='c' * 32)
-    records = [parent, sibling]
-    actions: list[tuple[str, str]] = []
-    picker = TaskMenu(snapshot=lambda: records, action=lambda name, task_id: actions.append((name, task_id)))
-    item = picker.items()[1]
-    assert item.value == sibling.id
-    assert 'running' in picker.preview(item)
-    records.insert(1, task(task_id='b' * 32, parent_id=parent.id))
-    sibling.status, sibling.outcome, sibling.output = 'finished', 'ok', 'child result'
-    picker.records = records
-    assert picker.items()[1].value == sibling.id
-    assert 'child result' in picker.preview(item)
-    assert picker.selected == sibling.id
-    picker.scroll(10)
-    assert picker.offset == 10
-    picker.scroll(-20)
-    assert picker.offset == 0
-    assert 'child result' in picker.preview(item)
-
-
-def test_menu_empty_and_untrusted_transcript() -> None:
-    picker = TaskMenu(snapshot=lambda: (), action=lambda name, task_id: None)
-    assert picker.items()[0].disabled
-    assert picker.preview(MenuItem('none')) == ''
-    record = task()
-    record.prompt = 'unsafe\x1b]52;c;payload\x07'
-    picker.records = [record]
-    assert '\x1b' not in picker.preview(picker.items()[0])
 
 
 @pytest.mark.parametrize('name', ['Explore', 'Plan', 'general-purpose'])
@@ -141,118 +107,17 @@ async def test_stock_managed_specialists_and_general_purpose(tmp_path: Path, nam
         assert prompts == ['parent', 'child']
 
 
-def test_detail_wraps_cell_width_and_refreshes() -> None:
-    record = task()
-    record.prompt = '界' * 80
-    records = [record]
-    sizes = [(60, 20)]
-
-    def poll() -> str:
-        record.status, record.outcome, record.output = 'finished', 'ok', 'completed result'
-        sizes[0] = (25, 20)
-        return ''
-
-    picker = TaskMenu(snapshot=lambda: records, action=lambda name, task_id: None, key_source=poll)
-    detail = TaskDetail(picker=picker, task_id=record.id, size=lambda: sizes[0])
-    assert all(cell_len(item.label) <= 55 for item in detail.items())
-    menu = detail.build()
-    # Drive the public widget with a controlled input source and stream.
-    assert '界' * 80 in ''.join(item.label for item in detail.items())
-    poll()
-    assert all(cell_len(item.label) <= 20 for item in detail.items())
-    assert 'completed result' in ''.join(item.label for item in detail.items())
-    assert menu.highlighted is not None
-
-
-def test_task_menu_flow_and_action_errors() -> None:
-    record = task()
-    actions: list[tuple[str, str]] = []
-
-    def action(name: str, task_id: str) -> None:
-        actions.append((name, task_id))
-        if name == 'stop':
-            raise ValueError('already stopped')
-
-    picker = TaskMenu(snapshot=lambda: [record], action=action)
-    menu = picker.build()
-    item = picker.items()[0]
-    picker.act(menu, item, 'background')
-    assert 'background requested' in picker.notice
-    picker.act(menu, item, 'stop')
-    assert picker.notice == 'already stopped'
-    picker.act(menu, MenuItem('empty', value=42), 'stop')
-    assert len(actions) == 2
-    calls = 0
-
-    def choose(menu: Menu) -> MenuResult:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return MenuResult(item=item)
-        assert menu.highlighted is not None and menu.highlighted.value == record.id
-        return MenuResult(cancelled=True)
-
-    details: list[Menu] = []
-
-    def inspect(menu: Menu) -> MenuResult:
-        details.append(menu)
-        return MenuResult(cancelled=True)
-
-    run_tasks(picker, runners=Runners(run_list=choose, run_choice=inspect))
-    assert len(details) == 1
-    run_tasks(picker, runners=Runners(run_list=lambda menu: MenuResult()))
-    run_tasks(picker, runners=Runners(run_list=lambda menu: MenuResult(item=MenuItem('invalid', value=42))))
-
-
-async def test_open_tasks_injectable_runner() -> None:
-    ui = Tasks(console=Console(file=io.StringIO()), conversation_id=lambda: 'root', directory=None)
-
-    def close(menu: Menu) -> MenuResult:
-        assert menu.highlighted is not None
-        assert menu.highlighted.disabled
-        return MenuResult(cancelled=True)
-
-    assert await open_tasks(ui, runners=Runners(run_list=close)) == ''
-
-
-@pytest.mark.parametrize('detail', [False, True])
-def test_widget_polling_controls_and_resize(monkeypatch: pytest.MonkeyPatch, detail: bool) -> None:
-    monkeypatch.setattr('termflow.tui.menu.raw_mode', nullcontext)
-
-    def alternate(output: object) -> nullcontext[None]:
-        return nullcontext()
-
-    monkeypatch.setattr('termflow.tui.menu.alt_screen', alternate)
-    record = task()
-    keys = iter(['', 'down', 'b', 'x', ']', '[', 'end', 'home', 'escape'])
-    actions: list[str] = []
-
-    def poll() -> str:
-        key = next(keys)
-        record.status, record.outcome, record.output = 'finished', 'ok', 'live completed'
-        return key
-
-    picker = TaskMenu(snapshot=lambda: [record], action=lambda name, task_id: actions.append(name), key_source=poll)
-    widget = TaskDetail(picker=picker, task_id=record.id).build() if detail else picker.build()
-    assert widget.run().cancelled
-    assert actions == ['background', 'stop']
-    assert 'live completed' in picker.preview(picker.items()[0])
-
-
 async def test_partial_stream_and_lifecycle_routing() -> None:
     output = io.StringIO()
     console = Console(file=output)
     ui = Tasks(console=console, conversation_id=lambda: 'root', directory=None)
     record = task()
     ui.owner.records[record.id] = record
-    assert ui.snapshots()[0].messages == []
     start = PartStartEvent(index=0, part=TextPart('first'))
     await ui.observe(DelegationTaskEvent(task=record, event=start))
     await ui.observe(DelegationTaskEvent(task=record, event=PartDeltaEvent(index=0, delta=TextPartDelta(' second'))))
-    assert 'first second' in str(ui.snapshots()[0].messages)
     assert record.messages == []
     await ui.observe(DelegationTaskEvent(task=record, event=PartEndEvent(index=0, part=TextPart('first second'))))
-    assert ui.snapshots()[0].messages == []
     assert task_row(start) is None
     event = DelegationStartEvent(agent_name='self', task='hello', truncated=False, inherits_tools=True, model=None)
     await ui.observe(DelegationTaskEvent(task=record, event=event))
@@ -316,39 +181,6 @@ async def test_presentation_classifies_capability_owned_tool() -> None:
     assert any(isinstance(event, DelegationToolCallEvent) for event in events)
 
 
-async def test_open_tasks_controls_on_application_loop(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr('termflow.tui.menu.raw_mode', nullcontext)
-
-    def alternate(output: object) -> nullcontext[None]:
-        return nullcontext()
-
-    monkeypatch.setattr('termflow.tui.menu.alt_screen', alternate)
-    keys = iter(['b', 'x', 'escape'])
-    ui = Tasks(console=Console(file=io.StringIO()), conversation_id=lambda: 'root', directory=None)
-
-    def run(menu: Menu) -> MenuResult:
-        # TaskMenu's default source resolves menu_key on construction; replace the reader's dependency.
-        return menu.run()
-
-    def read(*, timeout: float) -> str:
-        return next(keys)
-
-    monkeypatch.setattr('pydantic_clai2.ui.menus.menu_worker.read_key', read)
-    import asyncio
-
-    async def child(record: DelegationTask) -> str:
-        await asyncio.Event().wait()
-        return 'unreachable'  # pragma: no cover
-
-    async with ui.owner.opened():
-        await ui.owner.delegate(
-            agent_name='worker', prompt='', conversation_id='root', model=None, background=True, resume=None, run=child
-        )
-        assert await open_tasks(ui, runners=Runners(run_list=run)) == ''
-        (record,) = ui.owner.records.values()
-        assert record.user_stopped
-
-
 async def test_promote_all_foreground_siblings() -> None:
     import asyncio
 
@@ -392,7 +224,7 @@ def test_terminal_row_outcomes(success: bool) -> None:
         assert row is None
     else:
         assert row is not None
-        assert '/tasks to inspect' in row.plain and 'untrusted' not in row.plain
+        assert 'Ctrl+X Ctrl+A to watch' in row.plain and 'untrusted' not in row.plain
 
 
 async def test_presentation_keeps_ordinary_tool_events() -> None:
@@ -435,7 +267,7 @@ async def test_task_commands_and_plugin_lifetime(tmp_path: Path) -> None:
         assert not shell.plugins_busy('/plugins list')
         assert 'may now be resumed' in await shell.tasks_command(['resume', 'aaaa'])
         assert not record.user_stopped
-        assert 'moved to background' in await shell.tasks_command(['background', 'aaaa'])
+        assert 'already finished' in await shell.tasks_command(['background', 'aaaa'])
         shell.editor = LivePrompt(
             history=InMemoryHistory(),
             console=shell.console,
@@ -447,21 +279,6 @@ async def test_task_commands_and_plugin_lifetime(tmp_path: Path) -> None:
         assert 'Resume requested' in await shell.tasks_command(['resume', 'aaaa'])
         assert record.id in shell.editor.queued_messages[0]
     await shell.forks.close()
-
-
-async def test_live_partial_tail_is_bounded_without_changing_history() -> None:
-    ui = Tasks(console=Console(file=io.StringIO()), conversation_id=lambda: 'root', directory=None)
-    record = task()
-    ui.owner.records[record.id] = record
-    text = 'x' * 100000
-    await ui.observe(DelegationTaskEvent(task=record, event=PartStartEvent(index=0, part=TextPart(text))))
-    assert len(ui.partial[record.id]) == 65536
-    assert 'Live preview tail' in str(ui.snapshots()[0].messages)
-    assert not record.messages
-    record.messages = [ModelResponse(parts=[TextPart(text)])]
-    await ui.observe(DelegationTaskEvent(task=record, event=PartEndEvent(index=0, part=TextPart(text))))
-    assert ui.snapshots()[0].messages == record.messages
-    assert not ui.partial_truncated
 
 
 async def test_main_user_interrupt_marks_foreground_child_stopped(
@@ -724,3 +541,95 @@ async def test_consumed_background_report_does_not_start_another_turn(
         assert await shell.run() == 'eof'
     assert reads == 2
     assert shell.session.messages == []
+
+
+async def test_live_view_streams_and_steers_a_running_task() -> None:
+    ui = Tasks(console=Console(file=io.StringIO()), conversation_id=lambda: 'root', directory=None)
+    started, release = asyncio.Event(), asyncio.Event()
+    seen: list[str] = []
+
+    async def child_stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
+        request = messages[-1]
+        assert isinstance(request, ModelRequest)
+        seen.append(' '.join(str(part.content) for part in request.parts if isinstance(part, UserPromptPart)))
+        if not started.is_set():
+            started.set()
+            await release.wait()
+        yield 'child done'
+
+    async def run(record: DelegationTask) -> str:
+        child = Agent(FunctionModel(stream_function=child_stream))
+        capability = DelegationReports(ui.owner, conversation_id='root', task_id=record.id)
+        return (await child.run(record.prompt, capabilities=[capability])).output
+
+    async with ui.owner.opened():
+        await ui.owner.delegate(
+            agent_name='self',
+            prompt='inspect',
+            conversation_id='root',
+            model=None,
+            background=True,
+            resume=None,
+            run=run,
+        )
+        await started.wait()
+        (record,) = ui.owner.records.values()
+        await ui.observe(DelegationTaskEvent(task=record, event=PartStartEvent(index=0, part=TextPart('partial'))))
+        stream = ui.agents.get(f'task-{record.id}')
+        assert stream is not None
+        assert (stream.title, stream.activity()) == (f'general-purpose {record.id[:8]}', 'responding')
+        assert isinstance(stream.entries[-1], PartStartEvent)
+        assert ui.send(record.id, 'look here', 'asap') == f'Steering sent to task {record.id[:8]}.'
+        assert ui.send(record.id, 'then wrap up', 'when_idle') == f'Queued for task {record.id[:8]}.'
+        release.set()
+        while record.status != 'finished':
+            await asyncio.sleep(0)
+        assert ui.send(record.id, 'late', 'asap').startswith(f'Task {record.id[:8]} is not running.')
+        assert stream.activity() == 'ok'
+        assert stream.entries[-2:] == [
+            SentPrompt(text='look here', label='steer'),
+            SentPrompt(text='then wrap up', label='queued'),
+        ]
+    assert seen == ['inspect', 'look here then wrap up']
+    elsewhere = DelegationTask(id='c' * 32, agent_name='worker', prompt='p', conversation_id='other')
+    await ui.observe(DelegationTaskEvent(task=elsewhere, event=PartStartEvent(index=0, part=TextPart('x'))))
+    assert ui.agents.get(f'task-{elsewhere.id}') is None
+
+
+async def test_live_view_lists_saved_tasks_and_stops_or_backgrounds_them(tmp_path: Path) -> None:
+    from tests.clai2.test_forks import Model, shell_for
+
+    shell = shell_for(tmp_path, Model(), io.StringIO())
+    assert 'needs an interactive terminal' in await shell.tasks_command([])
+    saved = task()
+    saved.conversation_id = shell.session.summary.id
+    saved.status, saved.outcome = 'finished', 'ok'
+    saved.messages = [
+        ModelRequest(parts=[UserPromptPart('inspect')]),
+        ModelResponse(parts=[TextPart('looked around'), ToolCallPart('grep', {'pattern': 'x'}, tool_call_id='c')]),
+    ]
+    elsewhere = task(task_id='b' * 32)
+    elsewhere.conversation_id = 'other'
+    shell.tasks.owner.records = {saved.id: saved, elsewhere.id: elsewhere}
+    shell.tasks.restore()
+    shell.tasks.restore()
+    stream = shell.agents.get(f'task-{saved.id}')
+    assert stream is not None and shell.agents.get(f'task-{elsewhere.id}') is None
+    # The saved history already starts with the prompt, so it shows once.
+    assert [entry for entry in stream.entries if isinstance(entry, SentPrompt)] == [SentPrompt(text='inspect')]
+    assert stream.activity() == 'ok'
+    assert stream.stop is not None and await stream.stop() == 'Task aaaaaaaa already finished.'
+    empty = task(task_id='c' * 32)
+    empty.conversation_id = shell.session.summary.id
+    shell.tasks.owner.records[empty.id] = empty
+    shell.tasks.restore()
+    blank = shell.agents.get(f'task-{empty.id}')
+    assert blank is not None and blank.entries == [SentPrompt(text='inspect')]
+    assert any(isinstance(entry, PartStartEvent) for entry in stream.entries)
+    assert stream.background is not None and stream.background() == 'Task aaaaaaaa already finished.'
+    saved.status, saved.backgroundable = 'running', False
+    assert 'workspace' in stream.background()
+    async with shell.tasks.owner.opened():
+        assert await stream.stop() == 'Stopping task aaaaaaaa and its descendants.'
+    assert saved.user_stopped
+    await shell.forks.close()

@@ -1,12 +1,14 @@
 """Pinned editor and scrollback ownership, without a PromptSession renderer."""
 
 import asyncio
+import math
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from itertools import islice
+from typing import Protocol
 
 import anyio
 from PIL import Image
@@ -44,6 +46,22 @@ class _Queued:
 
 class PromptWakeup(Exception):
     """An automated continuation is ready; the editor draft is not a submission."""
+
+
+class PromptOverlay(Protocol):
+    """A view drawn above the editor that may take keys and send drafts somewhere else."""
+
+    def key(self, key: str, *, draft: str) -> bool:
+        """Handle a key the editor would otherwise route; `True` consumes it."""
+        ...
+
+    def deliver(self, text: str, *, steer: bool) -> str | None:
+        """Take an accepted draft and return a notice, or `None` for the editor's own path."""
+        ...
+
+    def close(self) -> str | None:
+        """Esc: close the view and return a notice, or `None` if it was not open."""
+        ...
 
 
 class LivePrompt:
@@ -90,6 +108,7 @@ class LivePrompt:
         self.spinner = spinner
         self.panel = panel
         self.notice = ''
+        self.overlay: PromptOverlay | None = None
         self._chord_prefix = ''
         self.buffer = PromptBuffer(history=list(reversed(list(history.load_history_strings()))))
         self.output = PromptSurface(output=console.file, size=lambda: console.size, transcript=transcript)
@@ -176,7 +195,7 @@ class LivePrompt:
     def feed(self, key: str, data: str = '') -> None:
         """Route editing, completion and interrupts without rendering a widget tree."""
         self.notice = ''
-        if not self._chord(key):
+        if not self._chord(key) and not (self.overlay is not None and self.overlay.key(key, draft=self.buffer.text)):
             self._route(key, data)
         self.paint()
 
@@ -184,9 +203,8 @@ class LivePrompt:
         cycles = key in ('up', 'down') and self._arrows_cycle_completions()
         if key == 'ctrl-c':
             self.interrupt()
-        elif key == 'escape' and self.interrupts.active:
-            cancelled = self.interrupts.cancel(exit_on_repeat=False)
-            telemetry.record('prompt interrupt', key='escape', cancelled_turn=cancelled)
+        elif key == 'escape' and self.escape_closes():
+            pass
         elif key == 'ctrl-d':
             if self.buffer.text:
                 self.buffer.edit('delete')
@@ -201,7 +219,7 @@ class LivePrompt:
         elif key == 'enter':
             self.accept()
         elif key == 'alt-enter':
-            self.steer_queued()
+            self.steer_input()
         elif key in ('shift-enter', 'ctrl-j'):
             self.buffer.insert('\n')
         elif cycles:
@@ -214,6 +232,24 @@ class LivePrompt:
             self.buffer.edit(key)
         if key not in ('tab', 'backtab', 'escape') and not cycles:
             self.refresh_completions()
+
+    def escape_closes(self) -> bool:
+        """Esc closes an open view first, then interrupts a turn; with neither, the editor handles it.
+
+        A suggestion popup (shown or still being looked up) or history search closes before the view.
+        A running turn is interrupted even then, as it always was, so one Esc reliably stops work.
+        """
+        popup = bool(self._completions) or self._completion_pending
+        if self.overlay is not None and not popup and self.buffer.search is None:
+            notice = self.overlay.close()
+            if notice is not None:
+                self.notice = notice
+                return True
+        if not self.interrupts.active:
+            return False
+        cancelled = self.interrupts.cancel(exit_on_repeat=False)
+        telemetry.record('prompt interrupt', key='escape', cancelled_turn=cancelled)
+        return True
 
     def _arrows_cycle_completions(self) -> bool:
         """Whether Up/Down move through the popup rather than the draft and history.
@@ -282,7 +318,14 @@ class LivePrompt:
             return
         self.history.append_string(text)
         self.buffer.history.append(text)
-        if self.run_now is not None and self.run_now(command):
+        if (
+            target is None
+            and self.overlay is not None
+            and (notice := self.overlay.deliver(command, steer=False)) is not None
+        ):
+            route = 'agent queued'
+            self.notice = notice
+        elif self.run_now is not None and self.run_now(command):
             route = 'run now'
             if target is not None:
                 self._discard(target)
@@ -314,6 +357,27 @@ class LivePrompt:
             self._editing = self._recall_target
         elif offset is not None:
             self._editing = self._recall_queue[offset] if -offset <= len(self._recall_queue) else None
+
+    def steer_input(self) -> None:
+        """Alt+Enter: steer another agent with the draft when an overlay takes it, else promote the queue."""
+        if not self.steer_draft():
+            self.steer_queued()
+
+    def steer_draft(self) -> bool:
+        """Send the draft itself as steering when an overlay routes it to another agent."""
+        text = self.buffer.text.strip()
+        if not text or self.overlay is None or self._editing is not None:
+            return False
+        notice = self.overlay.deliver(expand_bare_command(text), steer=True)
+        if notice is None:
+            return False
+        self.history.append_string(text)
+        self.buffer.history.append(text)
+        self.buffer.history_index = None
+        self.buffer.replace('')
+        self.notice = notice
+        telemetry.record('prompt steer', steered=True, target='agent')
+        return True
 
     def steer_queued(self) -> None:
         """Promote the oldest follow-up without bypassing commands, shell lines, or control signals."""
@@ -486,6 +550,11 @@ class LivePrompt:
         rows.append(muted + truncate(footer, width) + reset)
         return tuple(rows)
 
+    @property
+    def is_suspended(self) -> bool:
+        """Whether a menu, question, or shell command owns the terminal instead of the editor."""
+        return self._suspended
+
     def paint(self) -> None:
         """Draw only when the editor owns the terminal."""
         if self._opened and not self._suspended:
@@ -521,7 +590,8 @@ class LivePrompt:
             while True:
                 self.paint()
                 # A spinner faster than the status poll gets a repaint per frame, but only while it shows.
-                await anyio.sleep(min(0.1, self.spinner().interval) if self.interrupts.active else 0.1)
+                period = min(0.1, self.spinner().interval) if self.interrupts.active else 0.1
+                await anyio.sleep(until_next_frame(self.clock(), period=period))
 
         loop = asyncio.get_running_loop()
 
@@ -550,6 +620,15 @@ class LivePrompt:
             self._completion_worker.close()
             self.console.file = original
             self.output.release()
+
+
+def until_next_frame(now: float, *, period: float) -> float:
+    """Seconds until the next multiple of `period`, so repaints land on spinner frames instead of drifting.
+
+    A fixed sleep adds each paint's own time, and every so often skips a whole frame.
+    """
+    # Counting frames, not taking `now % period`, keeps a float just short of a boundary from sleeping ~0.
+    return (math.floor(now / period + 1e-9) + 1) * period - now
 
 
 def _capped(rows: list[str], *, limit: int, room: int, more: str) -> list[str]:

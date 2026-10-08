@@ -27,9 +27,10 @@ from pydantic_clai2 import StreamRenderer
 from pydantic_clai2.commands import Command, Commands
 from pydantic_clai2.ui.prompt.image_input import ImageInput
 from pydantic_clai2.ui.prompt.interrupts import Interrupts
-from pydantic_clai2.ui.prompt.live_prompt import LivePrompt, PromptWakeup
+from pydantic_clai2.ui.prompt.live_prompt import LivePrompt, PromptWakeup, until_next_frame
 from pydantic_clai2.ui.prompt.prompt_completion import CompletionWorker
 from pydantic_clai2.ui.rendering import theme
+from pydantic_clai2.ui.rendering.agent_roster import spinner_frame
 from tests.clai2.surface_terminal import SurfaceTerminal
 
 
@@ -631,3 +632,15 @@ async def test_removing_queued_prompt_does_not_discard_pending_wake(wake: bool) 
             with anyio.move_on_after(0) as waiting:
                 await live.read()
             assert waiting.cancelled_caught
+
+
+def test_repaints_land_on_every_spinner_frame() -> None:
+    assert until_next_frame(1.23, period=0.1) == pytest.approx(0.07)
+    assert until_next_frame(1.0, period=0.25) == pytest.approx(0.25)
+    now, frames = 5.0, [spinner_frame(5.0)]
+    for _ in range(50):
+        # Each paint takes 30 ms; a fixed 100 ms sleep would drift and skip frames.
+        now += until_next_frame(now, period=0.1) + 0.03
+        frames.append(spinner_frame(now))
+    order = '\u280b\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f'
+    assert all(order[(order.index(a) + 1) % 10] == b for a, b in zip(frames, frames[1:]))

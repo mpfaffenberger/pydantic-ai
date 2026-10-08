@@ -400,6 +400,10 @@ three child layers. An explicitly configured non-default `SubAgents.max_depth`
 still takes precedence. Ordinary `SubAgents` retains its original depth default.
 
 `background(task_id)` releases a foreground waiter without restarting the child.
+`steer(task_id, content, priority=...)` delivers the user's own input to a running
+child through core's message queue: `'asap'` reaches it at its next step, and
+`'when_idle'` is a follow-up it reads before it would otherwise finish. It returns
+`False` when the child is not running.
 `await cancel(task_id)` stops and drains that child and its descendants. A user stop
 blocks model-requested resume until the application explicitly calls
 `await allow_resume(task_id)`. `one_shot` names never resume. A resume uses the same

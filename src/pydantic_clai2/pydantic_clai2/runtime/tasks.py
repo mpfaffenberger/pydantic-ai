@@ -1,8 +1,8 @@
 """CLAI's presentation and specialist roster for harness-owned child tasks."""
 
-import copy
 import time
 from collections.abc import AsyncIterable, Awaitable, Callable, Sequence
+from functools import partial
 from pathlib import Path
 
 from rich.console import Console
@@ -11,16 +11,11 @@ from rich.text import Text
 from pydantic_ai import (
     Agent,
     AgentStreamEvent,
-    PartDeltaEvent,
-    PartEndEvent,
-    PartStartEvent,
     RunContext,
-    TextPart,
-    TextPartDelta,
     _utils,
 )
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.messages import FunctionToolCallEvent, ModelResponse
+from pydantic_ai.messages import FunctionToolCallEvent
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.step_persistence import StepStore
 from pydantic_ai_harness.subagents import (
@@ -32,8 +27,10 @@ from pydantic_ai_harness.subagents import (
     SubAgent,
     SubAgents,
 )
+from pydantic_clai2.runtime._session import SteeringPriority
 from pydantic_clai2.runtime.sandbox_calls import DelegationToolCallEvent
 from pydantic_clai2.ui.rendering import theme
+from pydantic_clai2.ui.rendering.agent_streams import AgentStream, AgentStreams, SentPrompt, history_entries
 from pydantic_clai2.ui.rendering.status import Status
 from pydantic_clai2.ui.rendering.tool_output import terminal_text
 
@@ -88,7 +85,7 @@ def task_row(event: AgentStreamEvent) -> Text | None:
         return row
     if isinstance(event, DelegationEndEvent) and event.outcome != 'ok':
         return Text(
-            f'  └ {event.outcome} · {event.duration_seconds:.1f}s · /tasks to inspect',
+            f'  └ {event.outcome} · {event.duration_seconds:.1f}s · Ctrl+X Ctrl+A to watch',
             style=theme.color(theme.WARNING),
         )
     return None
@@ -104,15 +101,15 @@ class Tasks:
         conversation_id: Callable[[], str],
         directory: Path | None,
         step_store: StepStore | None = None,
+        agents: AgentStreams | None = None,
     ) -> None:
         self.presentation = TaskPresentation()
+        self.agents = agents if agents is not None else AgentStreams()
         self.console = console
         self.conversation_id = conversation_id
         self.sink: Callable[[AgentStreamEvent], Awaitable[None]] | None = None
         self.wake: Callable[[], None] | None = None
         self.progress: dict[str, Status] = {}
-        self.partial: dict[str, str] = {}
-        self.partial_truncated: set[str] = set()
         self.owner = DelegationTasks(
             observer=self.observe,
             directory=directory,
@@ -133,18 +130,10 @@ class Tasks:
     async def observe(self, update: DelegationTaskEvent) -> None:
         record, event = update.task, update.event
         progress = self.progress.setdefault(record.id, Status(activity='starting'))
-        if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-            self.partial[record.id] = event.part.content
-        elif isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-            self.partial[record.id] = self.partial.get(record.id, '') + event.delta.content_delta
-        elif isinstance(event, (PartEndEvent, DelegationEndEvent)) or record.status == 'finished':
-            self.partial.pop(record.id, None)
-            self.partial_truncated.discard(record.id)
-        if len(self.partial.get(record.id, '')) > 65536:
-            self.partial[record.id] = self.partial[record.id][-65536:]
-            self.partial_truncated.add(record.id)
         if event is not None:
             progress.observe(event)
+            if record.conversation_id == self.conversation_id():
+                self._stream(record).observe(event)
         if (
             record.status == 'finished'
             and record.background
@@ -163,6 +152,58 @@ class Tasks:
         elif (row := task_row(event)) is not None:
             self.console.print(row)
 
+    def _stream(self, record: DelegationTask) -> AgentStream:
+        name = 'general-purpose' if record.agent_name == 'self' else record.agent_name
+        return self.agents.add(
+            AgentStream(
+                key=f'task-{record.id}',
+                title=f'{name} {record.id[:8]}',
+                activity=partial(self._activity, record.id),
+                send=partial(self.send, record.id),
+                stop=partial(self.stop, record.id),
+                background=partial(self.background, record.id),
+            )
+        )
+
+    def restore(self) -> None:
+        """Give this conversation's saved tasks a live-view entry, replaying their history."""
+        for record in self.records():
+            if self.agents.get(f'task-{record.id}') is None:
+                # A saved history starts with the task's own prompt; without one, show the prompt alone.
+                entries = history_entries(record.messages) or [SentPrompt(text=record.prompt)]
+                self._stream(record).entries.extend(entries)
+
+    def _activity(self, task_id: str) -> str:
+        outcome = self.owner.records[task_id].outcome
+        return outcome if outcome is not None else self.progress.get(task_id, Status(activity='starting')).activity
+
+    async def stop(self, task_id: str) -> str:
+        """Stop a task and its descendants, leaving siblings running."""
+        if self.owner.records[task_id].status != 'running':
+            return f'Task {task_id[:8]} already finished.'
+        await self.owner.cancel(task_id)
+        await self.owner.save(self.owner.records[task_id])
+        return f'Stopping task {task_id[:8]} and its descendants.'
+
+    def background(self, task_id: str) -> str:
+        """Release a foreground task's waiting parent; the task keeps running."""
+        record = self.owner.records[task_id]
+        if record.status != 'running':
+            return f'Task {task_id[:8]} already finished.'
+        try:
+            self.owner.background(task_id)
+        except ValueError as exc:
+            return str(exc)
+        return f'Task {task_id[:8]} moved to background.'
+
+    def send(self, task_id: str, text: str, priority: SteeringPriority) -> str:
+        """`/forks live` input: steer or queue for a running sub-agent through its own run."""
+        record = self.owner.records[task_id]
+        if not self.owner.steer(task_id, [text], priority=priority):
+            return f'Task {task_id[:8]} is not running. /tasks resume {task_id[:8]} lets the agent continue it.'
+        self._stream(record).prompt(text, label='steer' if priority == 'asap' else 'queued')
+        return f'Steering sent to task {task_id[:8]}.' if priority == 'asap' else f'Queued for task {task_id[:8]}.'
+
     def _foreground_tasks(self) -> list[DelegationTask]:
         return [r for r in self.records() if r.status == 'running' and not r.background and r.parent_id is None]
 
@@ -170,13 +211,13 @@ class Tasks:
         """Ctrl+B backgrounds all foreground siblings directly delegated by the main run."""
         running = self._foreground_tasks()
         if not running:
-            return 'No foreground tasks. /tasks opens the task inspector.'
+            return 'No foreground tasks. Ctrl+X Ctrl+A shows every agent.'
         for record in running:
             try:
                 self.owner.background(record.id)
             except ValueError as exc:
                 return str(exc)
-        return f'{len(running)} task(s) moved to background. /tasks to inspect.'
+        return f'{len(running)} task(s) moved to background. Ctrl+X Ctrl+A to watch.'
 
     def rows(self, glyph: str) -> tuple[str, ...]:
         now = time.time()
@@ -209,7 +250,7 @@ class Tasks:
                 f'{theme.sgr(state_color)}{terminal_text(state or "")}{muted}{suffix}\x1b[0m'
             )
         if rows or recent:
-            hint = f'{theme.sgr(theme.ACCENT)}/tasks{theme.sgr(theme.MUTED)} inspect'
+            hint = f'{theme.sgr(theme.ACCENT)}Ctrl+X Ctrl+A{theme.sgr(theme.MUTED)} watch'
             if any(record.backgroundable for record in self._foreground_tasks()):
                 hint += f' · {theme.sgr(theme.ACCENT)}Ctrl+B{theme.sgr(theme.MUTED)} background'
             rows.append(hint + '\x1b[0m')
@@ -223,16 +264,6 @@ class Tasks:
             above = self.owner.records.get(parent)
             parent = above.parent_id if above is not None else None
         return False
-
-    def snapshots(self) -> tuple[DelegationTask, ...]:
-        """Display-only copies include uncommitted streamed text without altering replay history."""
-        records = copy.deepcopy(self.records())
-        for record in records:
-            if text := self.partial.get(record.id):
-                if record.id in self.partial_truncated:
-                    text = '[Live preview tail; full text is available when this response settles.]\n' + text
-                record.messages.append(ModelResponse(parts=[TextPart(text)]))
-        return records
 
     def resolve(self, prefix: str) -> DelegationTask:
         matches = [record for record in self.records() if record.id.startswith(prefix)]

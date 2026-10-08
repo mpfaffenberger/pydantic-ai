@@ -790,7 +790,7 @@ every later session; `/plugins enable repo_context` brings it back. See
 [PLUGINS.md](PLUGINS.md#the-built-in-plugins) for its settings.
 
 Interactive commands: `/login`, `/set`, `/theme`, `/model`, `/add_model`, `/model_settings`, `/help`, `/new`, `/clear`, `/resume`, `/exit`, `/config`,
-`/plugins`, `/reload`, `/update`, `/usage`, `/cost`, `/fork`, `/forks`, and `/compact` from the built-in `compaction` plugin.
+`/plugins`, `/reload`, `/update`, `/usage`, `/cost`, `/fork`, `/forks` (and `/forks live`), and `/compact` from the built-in `compaction` plugin.
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
 and paths after `@`. Suggestions match any substring, case-sensitively. For paths,
 matching applies to the filename within the typed directory. Path completion inserts
@@ -884,6 +884,7 @@ keep working while it answers. It follows Code Puppy's `/fork`.
 /fork @openai:gpt-5 review this         fork with another model
 /fork cancel 2                          stop fork #2
 /forks                                  list this session's forks
+/forks live                             watch, steer, and queue any agent
 ```
 
 The fork copies the retained history at the moment `/fork` runs and continues
@@ -894,9 +895,11 @@ current model, plugins, and model settings unless `@model` names another model.
 CLAI has one agent, so unlike Code Puppy there is no `@agent` argument.
 
 While forks run, the editor shows one row per fork above the prompt, like Code
-Puppy's sub-agent panel: the fork number, its model, your `/spinner`, the elapsed
-time, and what it is doing (`thinking`, `tool: NAME`, `responding`). A fork that
-finished while a turn or command was running shows as done until its output prints.
+Puppy's sub-agent panel: the fork number, its model, a braille spinner (the same
+one the live view uses, whatever your `/spinner`), the elapsed time, and what it
+is doing (`thinking`, `tool: NAME`, `responding`). A fork that finished while a
+turn or command was running shows as done until its output prints. Sub-agent and
+fork rows hide while `/forks live` is open, since its list shows them.
 
 When a fork finishes, CLAI prints a `FORK #N RESPONSE` banner with the model, the response as
 Markdown, the elapsed time, and the saved session id. `/resume SESSION-ID`
@@ -911,6 +914,36 @@ A fork is a turn for plugins: `turn_start` runs before it starts and can rewrite
 or cancel its prompt, which refuses the fork, and `turn_end` reports its outcome
 when it finishes. Forks share the foreground's plugin instances, so a tool that
 asks you a question can open its picker from a fork.
+
+### The live agent view: `/forks live`
+
+`/forks live` (or **Ctrl+X Ctrl+A**) lists every agent on the left: the main
+conversation, each fork, and each sub-agent from `delegate_task`, with a spinner
+while it works and a mark for how it ended. On the right, the selected agent's
+output looks exactly like the main transcript. Together they replace the
+transcript above the prompt, and the prompt itself stays where it is, with its
+history, completion, queue, and `/commands`. Output that would have gone to the
+transcript waits and prints when the view closes; a menu or a question from an
+agent closes the view until it is answered. **Esc** closes it, as does the same
+command or chord. With the view open, Esc closes it before it would interrupt a
+turn; an open suggestion list or history search still takes Esc first. During a turn, use the chord: a typed `/forks live` waits for the turn like
+other commands with arguments. The view is built on termflow's live mode.
+
+- **Tab** or **Shift+Tab** (with an empty prompt) moves focus between the agent list and the agent's output, outlined in bold.
+- **Up/Down**, with the list focused, picks an agent. With the output focused, they are the prompt's history again.
+- **x** stops the selected fork or sub-agent and **b** moves a sub-agent to the background, with the list focused and an empty prompt.
+- **PgUp/PgDn** scrolls the agent's output. Scrolling back to the bottom follows new output again.
+- **Enter** queues a follow-up the selected agent reads before it would otherwise finish.
+  A finished fork continues its conversation with your message as a new turn.
+- **Alt+Enter** sends the prompt now, as steering the selected agent reads at its next step.
+- `/commands` and `!shell` lines always go to the shell, whichever agent is selected.
+
+With the main conversation selected, Enter and Alt+Enter work as usual. The list
+sits beside the output when the terminal is at least 80 columns wide, and above
+it otherwise; with more agents than fit, it scrolls to keep the selection in
+view. A finished sub-agent cannot take new input; `/tasks resume ID` lets the
+main agent continue it. Images pasted into the prompt are only attached for the
+main conversation.
 
 ## Saved sessions and `/resume`
 
@@ -1146,35 +1179,15 @@ Nested children join their descendants and receive their reports before settling
   restarting them. The hint appears only while a foreground child can be
   backgrounded. In tmux, send Ctrl+B through to the application or change the
   tmux prefix.
-
-Task rows use the selected `/theme`: foreground and background modes, running
-activity, and failures each have their own role colour.
-
-### Agent folders
-
-CLAI loads custom agents from disk, in Claude Markdown (`*.md`) or Codex TOML
-(`*.toml`) format. Choose folders in `/plugins configure coder` under
-**Agent folders**, as a JSON list. Each entry is a folder name or a path:
-
-- A name such as `agents` searches `.agents/agents`, `.claude/agents`, and
-  `.codex/agents`, first in the project, then in your home directory. Project
-  definitions win over personal ones with the same name.
-- Add more names, for example `["agents", "global"]`, to also load
-  `.claude/global` and its siblings.
-- A path such as `./team-agents` or `~/my-agents` loads exactly that folder.
-- `[]` turns disk agents off.
-
-The stock CLI starts with `["agents"]`, so existing `.claude/agents` and
-`.codex/agents` definitions work without setup. If you saved Coder settings
-before this existed, disk agents stay off until you set **Agent folders**.
-Definition files are read as data and never executed.
-- **`/tasks`** opens the live picker during a turn or between turns. Enter opens
-  a full-width transcript with in-flight text; Esc returns to the picker, then
-  closes it. Arrow keys scroll the transcript; End follows its tail. Completing
-  a task does not close its detail view.
-- **`b` / `/tasks background ID`** backgrounds the selected child.
+- **`/tasks`** opens the live agent view (`/forks live`) on this conversation's
+  first task, during a turn or between turns. The list includes tasks saved
+  earlier in the conversation, replayed from their history. Select one with
+  Up/Down to read its transcript beside the list.
+- **`b` / `/tasks background ID`** backgrounds the selected child (`b` with the
+  list focused and an empty prompt).
 - **`x` / `/tasks stop ID`** stops that child and its descendants, leaving siblings
-  running. Stopping a child prevents automatic model resume.
+  running. Stopping a child prevents automatic model resume. In the view, `x`
+  also stops a selected fork.
 - **`/tasks resume ID`** explicitly authorizes resume and queues a request to the
   parent to continue the saved child. Explore and Plan cannot resume. The parent
   uses `delegate_task` with the same ID and agent name; it remains responsible
@@ -1182,11 +1195,14 @@ Definition files are read as data and never executed.
 
 The editor panel shows the task tree, activity, elapsed time, and descendant
 counts. Successful rows disappear on completion; failed and stopped rows remain
-for 30 seconds. The `/tasks` hint also remains for 30 seconds. The picker retains
-completed tasks for inspection. Live previews retain the latest 65,536 characters
-of an unfinished text part; settled responses retain their full history.
-Questions asked by children use the main
-terminal and identify the requesting child.
+for 30 seconds. The `Ctrl+X Ctrl+A watch` hint also remains for 30 seconds. The
+live view keeps every task of the session for reading.
+
+Task rows use the selected `/theme`: foreground and background modes, running
+activity, and failures each have their own role colour.
+
+Questions asked by children use the main terminal and identify the requesting
+child.
 
 Task metadata and independent histories are stored beside the session database
 in `<database-name>.tasks/`. Each database has its own task directory; in-memory
@@ -1208,6 +1224,25 @@ Supplied agents and headless invocations keep their existing delegation behavior
 the managed task UI is not installed on them. Saved Coder `sub_agents: false`
 and declarations omitting that setting remain opt-outs. CLAI adds no tools when
 delegation is disabled.
+
+### Agent folders
+
+CLAI loads custom agents from disk, in Claude Markdown (`*.md`) or Codex TOML
+(`*.toml`) format. Choose folders in `/plugins configure coder` under
+**Agent folders**, as a JSON list. Each entry is a folder name or a path:
+
+- A name such as `agents` searches `.agents/agents`, `.claude/agents`, and
+  `.codex/agents`, first in the project, then in your home directory. Project
+  definitions win over personal ones with the same name.
+- Add more names, for example `["agents", "global"]`, to also load
+  `.claude/global` and its siblings.
+- A path such as `./team-agents` or `~/my-agents` loads exactly that folder.
+- `[]` turns disk agents off.
+
+The stock CLI starts with `["agents"]`, so existing `.claude/agents` and
+`.codex/agents` definitions work without setup. If you saved Coder settings
+before this existed, disk agents stay off until you set **Agent folders**.
+Definition files are read as data and never executed.
 
 ## Bring an agent
 

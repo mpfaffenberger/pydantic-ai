@@ -101,8 +101,11 @@ class StreamRenderer:
         grep_lines: int = 20,
         tool_arg_chars: int = 40,
         renderers: Sequence[Callable[[AgentStreamEvent], RenderableType | None]] = (),
+        smooth: bool = True,
     ) -> None:
+        """`smooth=False` writes straight to the console, without the typing animation (live view panes)."""
         self.console = console
+        self.smooth = smooth
         self._renderers = tuple(renderers)
         self._sandbox_calls = SandboxCallOrder()
         self.show_tool_output = show_tool_output
@@ -201,7 +204,7 @@ class StreamRenderer:
 
     def _start_part(self) -> None:
         self._parser = Parser()
-        if self.console.is_terminal:
+        if self.console.is_terminal and self.smooth:
             self._writer = self._make_writer()
             self._writer.start()
         self._renderer = Renderer(

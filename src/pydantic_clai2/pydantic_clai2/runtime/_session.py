@@ -42,6 +42,8 @@ from pydantic_clai2.ui import telemetry
 
 DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
+SteeringPriority = Literal['asap', 'when_idle']
+"""When steering reaches a run: at its next step, or before it would otherwise end."""
 
 
 def _supports_local_workspace() -> bool:
@@ -213,7 +215,7 @@ class Session(Generic[DepsT, OutputT]):
         self._running = False
         self._accepting_steering = False
         self._run_context: RunContext[DepsT] | None = None
-        self._pending_steering: list[Sequence[UserContent]] = []
+        self._pending_steering: list[tuple[Sequence[UserContent], SteeringPriority]] = []
         self.on_context_usage: Callable[[int], None] | None = None
         self.on_setup_error: Callable[[CapabilitySetupError], None] | None = None
         """Told when a guarded plugin capability rejected its configuration, before the failed turn's error propagates."""
@@ -306,15 +308,19 @@ class Session(Generic[DepsT, OutputT]):
         model = self.resolve_model(self.model)
         return await model if isinstance(model, Awaitable) else model
 
-    def steer(self, text: str, *, images: Sequence[BinaryContent] = ()) -> bool:
-        """Deliver input to the active run, or decline when no run is accepting input."""
+    def steer(self, text: str, *, images: Sequence[BinaryContent] = (), priority: SteeringPriority = 'asap') -> bool:
+        """Deliver input to the active run, or decline when no run is accepting input.
+
+        `'asap'` steers the run at its next step; `'when_idle'` is a follow-up the run reads
+        before it would otherwise end.
+        """
         if not self._accepting_steering:
             return False
         content: Sequence[UserContent] = [text, *images]
         if self._run_context is None:
-            self._pending_steering.append(content)
+            self._pending_steering.append((content, priority))
         else:
-            self._run_context.enqueue(*content, priority='asap')
+            self._run_context.enqueue(*content, priority=priority)
         return True
 
     async def prompt(self, text: str | None, *, images: Sequence[BinaryContent] = ()) -> AgentRunResult[OutputT]:
@@ -432,8 +438,8 @@ class Session(Generic[DepsT, OutputT]):
     async def _stream(self, ctx: RunContext[DepsT], events: AsyncIterable[AgentStreamEvent]) -> None:
         self._accepting_steering = True
         self._run_context = ctx
-        for content in self._pending_steering:
-            ctx.enqueue(*content, priority='asap')
+        for content, priority in self._pending_steering:
+            ctx.enqueue(*content, priority=priority)
         self._pending_steering.clear()
 
         async def observed() -> AsyncIterable[AgentStreamEvent]:

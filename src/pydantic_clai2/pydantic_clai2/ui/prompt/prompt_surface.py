@@ -41,6 +41,11 @@ class PromptSurface(io.StringIO):
         self._observed_size = (0, 0)
         self._deferred: IO[str] | None = None
         self._holds = 0
+        self._covered = False
+        self._restore = False
+        self._painted = -1
+        self.revision = 0
+        """Changes whenever the transcript rows were redrawn or moved, so a cover repaints in full."""
 
     def isatty(self) -> bool:
         """Preserve Rich and Termflow terminal detection."""
@@ -58,6 +63,7 @@ class PromptSurface(io.StringIO):
             self._observed_size = size
             self._resize_at = self.clock()
             self._spool()
+            self.revision += 1
             self._transaction('\x1b[?25l\x1b[r\x1b[2J\x1b[1;1H')
 
     def _spool(self) -> None:
@@ -83,6 +89,49 @@ class PromptSurface(io.StringIO):
                 self._holds -= 1
                 if self._resize_at is None:
                     self._flush_deferred()
+
+    @contextmanager
+    def covered(self) -> Generator[None]:
+        """Let `paint_cover` own the transcript rows; spool output, then rebuild the transcript.
+
+        Closing while a menu owns the terminal rebuilds when the editor paints again.
+        """
+        with self._lock:
+            self._holds += 1
+            self._spool()
+            self._covered = True
+            self.revision += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._holds -= 1
+                self._covered = False
+                self._restore = True
+                if self._active and self._resize_at is None:
+                    width, height = self._geometry
+                    self._rebuild(rows=self._rows, width=width, height=height)
+                elif not self._active:
+                    # A menu or question owns the terminal: replay held output now, as `held` does.
+                    self._flush_deferred()
+
+    def paint_cover(self, draw: Callable[[int, int, bool], str]) -> None:
+        """While covered, write `draw(width, height, full)` over the transcript rows.
+
+        `full` is true when those rows were redrawn or moved since the last cover paint.
+        Nothing is drawn while a menu owns the terminal or a resize is settling.
+        """
+        with self._lock:
+            if self._active:
+                self._check_resize(size=self.size())
+            if not (self._covered and self._active) or self._resize_at is not None:
+                return
+            # `paint` keeps at most `height - 2` editor rows, so the transcript always has two.
+            width, height = self._geometry
+            text = draw(width, height - len(self._rows), self._painted != self.revision)
+            self._painted = self.revision
+            if text:
+                self._transaction('\x1b7\x1b[?7l' + text + '\x1b[?7h\x1b8')
 
     def _emit(self, text: str) -> None:
         self.transcript.write(text)
@@ -125,6 +174,8 @@ class PromptSurface(io.StringIO):
                     self._rebuild(rows=rows, width=width, height=height)
                 return
             self._paint(rows=rows, width=width, height=height)
+            if self._restore and not self._covered:
+                self._rebuild(rows=rows, width=width, height=height)
 
     def _paint(self, *, rows: tuple[str, ...], width: int, height: int) -> None:
         bottom = height - len(rows)
@@ -155,6 +206,8 @@ class PromptSurface(io.StringIO):
                     parts.append(f'\x1b[{row};1H\x1b[2K')
                 parts.append('\x1b8')
         parts.append(self._row_changes(rows=rows, bottom=bottom, width=width, force=changed_geometry))
+        if changed_geometry:
+            self.revision += 1
         if any(parts):
             self._transaction(''.join(parts))
         self._rows, self._geometry = rows, (width, height)
@@ -184,6 +237,8 @@ class PromptSurface(io.StringIO):
         self._observed_size = (width, height)
         self._resize_at = None
         self._resize_notice = False
+        self._restore = False
+        self.revision += 1
         self._flush_deferred()
 
     def _flush_deferred(self) -> None:
@@ -210,7 +265,8 @@ class PromptSurface(io.StringIO):
             try:
                 width, height = self.size()
                 width, height = max(1, width), max(2, height)
-                if self._resize_at is not None or (width, height) != self._geometry:
+                # A cover's frames go too: whoever takes over writes below the transcript, not over agents.
+                if self._resize_at is not None or (width, height) != self._geometry or self._covered:
                     rows = self._rows[-(height - 2) :] if height > 2 else ()
                     self._rebuild(rows=rows, width=width, height=height)
                 if self._partial:

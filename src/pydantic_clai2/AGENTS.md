@@ -233,7 +233,11 @@ Keep documented plugin-author paths (`pydantic_clai2.plugins` and
 | `runtime/_session.py` | conversation state, revision-checked saves, restore-only resume, plugin snapshots and stock-agent rebuilding |
 | `runtime/sessions.py` | resume command and background namer ownership; built-in step capture |
 | `runtime/session_naming.py` | resume-browser naming prompt, `SessionName` card schema, and the bounded `SessionNamer` worker |
-| `runtime/forks.py` | `/fork` and `/forks`: history snapshot, background child sessions, deferred fork output |
+| `runtime/forks.py` | `/fork` and `/forks`: history snapshot, background child sessions, deferred fork output, live-view steering and follow-ups |
+| `ui/rendering/agent_streams.py` | per-agent transcripts (main, forks, sub-agents): raw stream events plus sent prompts, and how to reach each agent; no terminal IO |
+| `ui/rendering/agent_pane.py` | the termflow `LiveApp` widget that replays one agent's events through the transcript's own `StreamRenderer` (`smooth=False`), incrementally, from the start on a width change |
+| `ui/rendering/agent_roster.py` | the live view's agent list: state glyphs, selection marker, and a window that keeps the selection visible |
+| `ui/prompt/agents_view.py` | `/forks live` (`Ctrl+X Ctrl+A`): the roster and the selected agent's pane as `LiveApp` windows painted over the transcript rows through `PromptSurface.paint_cover`, with focus, selection, and draft routing as the editor's `PromptOverlay`; steps aside while the editor is suspended |
 | `ui/menus/session_browser.py` | project/session browser using Termflow layout and terminal primitives |
 | `ui/rendering/_rendering.py` | streaming Markdown and thinking |
 | `plugins/__init__.py` | `Plugin`, `PluginHost`, `LoadedPlugin`/`collect`, event dataclasses |
@@ -258,8 +262,8 @@ Keep documented plugin-author paths (`pydantic_clai2.plugins` and
 | `commands.py` | `Command`, the registry, completion |
 | `ui/rendering/usage_report.py` | `/usage`, `/cost`, and the footer cost, derived from `Session.messages` |
 | `ui/rendering/status.py` | the footer `Status` fields, `StatusSegment`, and the `StatusLine` row painter |
-| `ui/prompt/live_prompt.py` | pinned editor lifecycle, completion worker, submission queue and menu handoff |
-| `ui/prompt/prompt_surface.py` | scroll-region ownership, serialized transcript writes and changed-row painting |
+| `ui/prompt/live_prompt.py` | pinned editor lifecycle, completion worker, submission queue, menu handoff, and the optional `PromptOverlay` that routes keys and drafts |
+| `ui/prompt/prompt_surface.py` | scroll-region ownership, serialized transcript writes, changed-row painting, and `covered`/`paint_cover` for a view over the transcript rows |
 | `ui/prompt/prompt_transcript.py` | bounded styled transcript tail for viewport replay |
 | `ui/prompt/prompt_resize.py` | scoped resize notifications, without terminal IO in signal handlers |
 | `ui/prompt/prompt_buffer.py` | pure draft editing, history navigation, search and cell-width wrapping |
@@ -370,6 +374,18 @@ The hardware cursor stays hidden until release; the input cursor is a painted
 reverse-video cell. Keep terminal mutations in `PromptSurface`, and detach the
 key reader before a menu owns the screen. The remaining prompt-toolkit decoder
 preserves paste and modified keys not yet exposed by Termflow's `read_key`.
+
+`/forks live` is not a menu and does not take the screen. While it is open,
+`PromptSurface.covered()` spools transcript output and `paint_cover` lets the view
+draw termflow `LiveApp` frames (`step` plus `render_diff`, never `LiveApp.run`)
+over the transcript rows only. Panes must look exactly like the transcript: render
+through `StreamRenderer` (built by `_stream_renderer`), never a second formatter,
+and do rendering in `AgentsView.refresh`, not inside the frame. The editor keeps its key reader; the view sees keys
+and accepted drafts through `LivePrompt.overlay`. Closing rebuilds the transcript
+from `TranscriptBuffer`, deferred to the editor's next paint if a menu owns the
+terminal. Agents are reached through `AgentStream.send`: core `enqueue` priorities
+(`asap` steers, `when_idle` queues), via `Session.steer` for forks and harness
+`DelegationTasks.steer` for sub-agents.
 
 Physical resize blanks the viewport and defers output until size notifications
 have been quiet for 250 ms. Rebuild from `TranscriptBuffer`, not guessed old row

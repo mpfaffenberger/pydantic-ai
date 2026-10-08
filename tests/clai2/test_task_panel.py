@@ -26,7 +26,7 @@ def test_selected_theme_and_available_background_action(palette: str, background
         mode = 'background' if background else 'foreground'
         assert rows[0].startswith(accent + '* ' + theme.sgr(theme.INFO) + 'worker ')
         assert f'{muted}[{record.id[:8]}] 0s · {mode} · {accent}starting' in rows[0]
-        assert theme.sgr(theme.ACCENT) + '/tasks' in rows[-1]
+        assert theme.sgr(theme.ACCENT) + 'Ctrl+X Ctrl+A' in rows[-1]
         assert ('Ctrl+B' in rows[-1]) is (not background)
 
 
@@ -76,7 +76,7 @@ def test_non_backgroundable_foreground_task_has_no_background_hint() -> None:
     record = task()
     record.backgroundable = False
     ui.owner.records[record.id] = record
-    assert '/tasks' in ui.rows('*')[-1]
+    assert 'Ctrl+X Ctrl+A' in ui.rows('*')[-1]
     assert 'Ctrl+B' not in ui.rows('*')[-1]
 
 
@@ -87,5 +87,5 @@ async def test_completed_task_hint_has_no_background_action() -> None:
     record.finished_at = time.time()
     ui.owner.records[record.id] = record
     await ui.observe(DelegationTaskEvent(task=record))
-    assert '/tasks' in ui.rows('*')[-1]
+    assert 'Ctrl+X Ctrl+A' in ui.rows('*')[-1]
     assert 'Ctrl+B' not in ui.rows('*')[-1]

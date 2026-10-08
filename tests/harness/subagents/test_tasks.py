@@ -10,7 +10,15 @@ import pytest
 
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelRetry
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, SystemPromptPart, TextPart, ToolCallPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    SystemPromptPart,
+    TextPart,
+    ToolCallPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai_harness.step_persistence import FileStepStore, StepPersistence
@@ -137,6 +145,48 @@ async def test_background_receipt_then_automated_report(tmp_path: Path) -> None:
     async with DelegationTasks(directory=tmp_path).opened() as restored:
         assert restored.records[record.id].delivered
         assert not restored.reports(conversation_id='parent')
+
+
+async def test_user_steers_and_queues_a_running_child() -> None:
+    started, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    seen: list[str] = []
+
+    async def child_stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
+        last = messages[-1]
+        assert isinstance(last, ModelRequest)
+        seen.append(' '.join(str(part.content) for part in last.parts if isinstance(part, UserPromptPart)))
+        if len(seen) == 1:
+            started.set()
+            await release.wait()
+        yield f'reply {len(seen)}'
+
+    child = Agent(FunctionModel(stream_function=child_stream), deps_type=object, name='worker')
+
+    async def observe(update: DelegationTaskEvent) -> None:
+        if update.task.status == 'finished':
+            finished.set()
+
+    owner = DelegationTasks(observer=observe)
+    with anyio.fail_after(WAIT):
+        async with owner.opened():
+            with owner.bind():
+                parent = Agent(
+                    parent_model(background=True),
+                    capabilities=[SubAgents(agents=[SubAgent(child)], agent_folders=None)],
+                )
+                await parent.run('go', conversation_id='parent')
+            await started.wait()
+            (record,) = owner.records.values()
+            assert not owner.steer('unknown', ['hello'])
+            assert not owner.steer(record.id, [])
+            assert owner.steer(record.id, ['then summarize'], priority='when_idle')
+            assert owner.steer(record.id, ['look in src'])
+            release.set()
+            await finished.wait()
+            assert not owner.steer(record.id, ['too late'])
+    # Both arrive when the child would have ended: steering first, then the queued follow-up.
+    assert seen == ['inspect', 'look in src then summarize']
+    assert record.output == 'reply 2'
 
 
 async def test_promotion_and_targeted_cancellation(tmp_path: Path) -> None:

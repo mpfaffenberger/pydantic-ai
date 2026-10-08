@@ -16,7 +16,7 @@ from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 from rich.text import Text
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, PartStartEvent
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
@@ -28,9 +28,11 @@ from pydantic_clai2.config.settings_store import SettingsStore
 from pydantic_clai2.plugins import HostEvent, TurnEnd, TurnStart
 from pydantic_clai2.runtime._session import Session
 from pydantic_clai2.runtime.forks import USAGE, Forks, parse_fork_args
+from pydantic_clai2.ui.prompt.agents_view import AgentsView
 from pydantic_clai2.ui.prompt.image_input import ImageInput
 from pydantic_clai2.ui.prompt.interrupts import Interrupts
 from pydantic_clai2.ui.prompt.live_prompt import LivePrompt
+from pydantic_clai2.ui.rendering.agent_streams import SentPrompt
 from pydantic_clai2.ui.rendering.spinners import BUILTIN_SPINNERS, DEFAULT_SPINNER
 
 PromptT = TypeVar('PromptT')
@@ -533,3 +535,127 @@ async def test_exit_cancels_running_forks(tmp_path: Path, monkeypatch: pytest.Mo
         store=SettingsStore(tmp_path / 'config.db'),
     )
     assert 'fork #1 cancelled after' in output.getvalue()
+
+
+async def test_live_view_steers_queues_and_continues_a_fork(tmp_path: Path) -> None:
+    model, output = Model(), io.StringIO()
+    shell = shell_for(tmp_path, model, output)
+    forks = shell.forks
+    async with forks.busy():
+        await forks.fork_command(['block'])
+        (record,) = forks.records
+        assert forks.send(1, 'too soon', 'asap') == 'fork #1 is not accepting input yet. Try again in a moment.'
+        await model.started.wait()
+        assert forks.send(1, 'steer me', 'asap') == 'Steering sent to fork #1.'
+        assert forks.send(1, 'then this', 'when_idle') == 'Queued for fork #1.'
+        model.release.set()
+        while record.status == 'running':
+            await asyncio.sleep(0)
+        # Its result still waits for the terminal, so a follow-up would race the announcement.
+        assert forks.send(1, 'again', 'when_idle').endswith('its result prints after this turn. Send again then.')
+    await record.task
+    assert 'steer me' in model.seen
+    assert forks.send(1, 'continue please', 'asap') == 'fork #1 continues with your message.'
+    assert record.status == 'running' and not record.announced
+    await record.task
+    assert (record.status, record.prompt) == ('done', 'continue please')
+    assert 'continue please' in model.seen
+    assert output.getvalue().count('FORK #1 RESPONSE') == 2
+    stream = shell.agents.get('fork-1')
+    assert stream is not None and stream.title == 'fork #1' and stream.activity() == 'done'
+    assert [entry for entry in stream.entries if isinstance(entry, SentPrompt)] == [
+        SentPrompt(text='block'),
+        SentPrompt(text='steer me', label='steer'),
+        SentPrompt(text='then this', label='queued'),
+        SentPrompt(text='continue please'),
+    ]
+    assert any(isinstance(entry, PartStartEvent) for entry in stream.entries)
+
+
+async def test_a_refused_follow_up_leaves_the_fork_failed() -> None:
+    model, output = Model(), io.StringIO()
+
+    async def fire(event: HostEvent) -> None:
+        if isinstance(event, TurnStart) and event.text == 'refuse':
+            event.cancel('nope')
+
+    forks = Forks(
+        console=Console(file=output, width=200),
+        history=lambda: [],
+        spawn=lambda _, history: Session(Agent(FunctionModel(stream_function=model.respond)), deps=None),
+        fire=fire,
+    )
+    await forks.fork_command(['hello'])
+    (record,) = forks.records
+    await record.task
+    assert forks.send(1, 'refuse', 'when_idle') == 'fork #1 continues with your message.'
+    await record.task
+    assert record.status == 'failed'
+    assert 'fork #1 could not continue: Fork cancelled by a plugin: nope' in output.getvalue()
+
+
+async def test_a_follow_up_cancelled_in_its_turn_start_settles() -> None:
+    model, output = Model(), io.StringIO()
+    hooked, events = asyncio.Event(), list[HostEvent]()
+
+    async def fire(event: HostEvent) -> None:
+        events.append(event)
+        if isinstance(event, TurnStart) and event.text == 'slow hook':
+            hooked.set()
+            await asyncio.Event().wait()
+
+    forks = Forks(
+        console=Console(file=output, width=200),
+        history=lambda: [],
+        spawn=lambda _, history: Session(Agent(FunctionModel(stream_function=model.respond)), deps=None),
+        fire=fire,
+    )
+    await forks.fork_command(['hello'])
+    (record,) = forks.records
+    await record.task
+    forks.send(1, 'slow hook', 'when_idle')
+    await hooked.wait()
+    assert forks.cancel('1') == 'Cancelling fork #1...'
+    await asyncio.gather(record.task, return_exceptions=True)
+    assert record.status == 'cancelled' and forks.rows('*') == ()
+    assert 'fork #1 cancelled after' in output.getvalue()
+    end = events[-1]
+    assert isinstance(end, TurnEnd) and (end.text, end.outcome) == ('slow hook', 'cancelled')
+    # It can continue again afterwards.
+    assert forks.send(1, 'again', 'when_idle') == 'fork #1 continues with your message.'
+    await record.task
+    assert record.status == 'done'
+
+
+async def test_agent_rows_use_the_braille_spinner_and_hide_under_the_live_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model, output = Model(), io.StringIO()
+    shell = shell_for(tmp_path, model, output)
+    monkeypatch.setattr('pydantic_clai2._app.time.monotonic', lambda: 0.0)
+    await shell.forks.fork_command(['block'])
+    await model.started.wait()
+    (row,) = shell.agent_rows('*')
+    assert '\u280b 00:0' in Text.from_ansi(row).plain
+    view = AgentsView(agents=shell.agents, editor=None)  # type: ignore[arg-type] -- never drawn here
+    shell.agents_view = view
+    view.open = True
+    assert shell.agent_rows('*') == ()
+    view.open = False
+    assert len(shell.agent_rows('*')) == 1
+    shell.forks.cancel('1')
+    model.release.set()
+    await asyncio.gather(*(record.task for record in shell.forks.records), return_exceptions=True)
+
+
+async def test_live_view_stop_key_cancels_a_fork(tmp_path: Path) -> None:
+    model, output = Model(), io.StringIO()
+    shell = shell_for(tmp_path, model, output)
+    await shell.forks.fork_command(['block'])
+    await model.started.wait()
+    stream = shell.agents.get('fork-1')
+    assert stream is not None and stream.stop is not None
+    assert await stream.stop() == 'Cancelling fork #1...'
+    (record,) = shell.forks.records
+    await asyncio.gather(record.task, return_exceptions=True)
+    assert record.status == 'cancelled'

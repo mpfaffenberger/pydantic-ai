@@ -3,6 +3,7 @@
 import asyncio
 import math
 import sys
+import time
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field, replace
@@ -63,16 +64,16 @@ from pydantic_clai2.runtime.reloading import reload_clai
 from pydantic_clai2.runtime.session_settings import SessionSettings
 from pydantic_clai2.runtime.sessions import Sessions
 from pydantic_clai2.runtime.speculation import Speculation
-from pydantic_clai2.runtime.tasks import Tasks, task_row
+from pydantic_clai2.runtime.tasks import Tasks, task_row, task_tree
 from pydantic_clai2.ui.menus.key_menu import keys_command
 from pydantic_clai2.ui.menus.menu_worker import holding_output
 from pydantic_clai2.ui.menus.model_picker import model_command, model_completions
 from pydantic_clai2.ui.menus.plugin_menu import open_plugins_menu
 from pydantic_clai2.ui.menus.set_menu import set_command
 from pydantic_clai2.ui.menus.spinner_picker import spinner_command, spinner_completions
-from pydantic_clai2.ui.menus.task_menu import open_tasks
 from pydantic_clai2.ui.menus.theme_picker import theme_command
 from pydantic_clai2.ui.prompt._completion_adapter import COMPLETION_STYLE, PromptCompleter
+from pydantic_clai2.ui.prompt.agents_view import AgentsView
 from pydantic_clai2.ui.prompt.image_input import ImageInput
 from pydantic_clai2.ui.prompt.input_history import input_history
 from pydantic_clai2.ui.prompt.interrupts import Interrupts
@@ -82,6 +83,8 @@ from pydantic_clai2.ui.prompt.screen import Screen
 from pydantic_clai2.ui.rendering import theme
 from pydantic_clai2.ui.rendering._branding import print_banner
 from pydantic_clai2.ui.rendering._rendering import StreamRenderer
+from pydantic_clai2.ui.rendering.agent_roster import spinner_frame
+from pydantic_clai2.ui.rendering.agent_streams import AgentStreams
 from pydantic_clai2.ui.rendering.spinners import Spinner, Spinners
 from pydantic_clai2.ui.rendering.status import Status, StatusLine
 from pydantic_clai2.ui.rendering.tool_output import terminal_text
@@ -609,12 +612,20 @@ def create_shell(
     commands.register(
         Command(
             name='tasks',
-            description='Inspect and control delegated tasks',
+            description='Watch and control delegated tasks in the live agent view',
             handler=shell.tasks_command,
             during_turn=True,
         )
     )
-    commands.register(Command(name='forks', description='Show background forks', handler=shell.forks.status_command))
+    commands.register(
+        Command(
+            name='forks',
+            description='Show background forks; /forks live watches, steers, and queues every agent',
+            handler=shell.forks_command,
+            complete=lambda args: ('live',) if len(args) <= 1 else (),
+            during_turn=True,
+        )
+    )
     return shell
 
 
@@ -643,6 +654,8 @@ class _Shell(Generic[DepsT, OutputT]):
     images: ImageInput = field(default_factory=ImageInput)
     reload_requested: bool = False
     editor: LivePrompt | None = None
+    agents: AgentStreams = field(default_factory=AgentStreams)
+    agents_view: AgentsView | None = None
     forks: Forks[DepsT, OutputT] = field(init=False)
     tasks: Tasks = field(init=False)
     _mid_turn_commands: MemoryObjectSendStream[str] | None = field(default=None, init=False, repr=False)
@@ -655,6 +668,7 @@ class _Shell(Generic[DepsT, OutputT]):
             if str(self.sessions.store.database) == ':memory:'
             else Path(str(self.sessions.store.database) + '.tasks'),
             step_store=self.session.step_store,
+            agents=self.agents,
         )
         self.forks = Forks(
             console=self.console,
@@ -662,7 +676,10 @@ class _Shell(Generic[DepsT, OutputT]):
             spawn=self.fork_session,
             fire=self.loader.fire,
             models=self.context.store.models,
+            agents=self.agents,
         )
+        self.agents.main.activity = lambda: self.status.activity
+        self.agents.renderer = self.pane_renderer
         self.session.on_setup_error = self.capability_failed
 
     def run_plugins(self) -> tuple[AgentCapability[DepsT], ...]:
@@ -700,18 +717,16 @@ class _Shell(Generic[DepsT, OutputT]):
         return child
 
     async def tasks_command(self, args: list[str]) -> str:
+        """`/tasks` opens the live view on this conversation's tasks; `stop|background|resume ID` act directly."""
         if not args:
-            return await open_tasks(self.tasks)
+            return self.show_tasks()
         if len(args) != 2 or args[0] not in ('stop', 'background', 'resume'):
             raise ValueError('Usage: /tasks [stop|background|resume ID]')
         record = self.tasks.resolve(args[1])
         if args[0] == 'stop':
-            await self.tasks.owner.cancel(record.id)
-            await self.tasks.owner.save(record)
-            return f'Stopping task {record.id[:8]} and its descendants.'
+            return await self.tasks.stop(record.id)
         if args[0] == 'background':
-            self.tasks.owner.background(record.id)
-            return f'Task {record.id[:8]} moved to background.'
+            return self.tasks.background(record.id)
         await self.tasks.owner.allow_resume(record.id)
         if self.editor is None:
             return f'Task {record.id} may now be resumed with delegate_task(resume={record.id!r}).'
@@ -720,6 +735,45 @@ class _Shell(Generic[DepsT, OutputT]):
             f'resume={record.id!r}. Continue from its saved history and report the result.'
         )
         return f'Resume requested for task {record.id[:8]}.'
+
+    def pane_renderer(self, console: Console) -> StreamRenderer:
+        """A live view pane's renderer: the transcript's settings and renderers, without the typing animation."""
+        renderers = [*self.loader.renderers(), task_row]
+        return _stream_renderer(console, settings=self.context.settings, renderers=renderers, smooth=False)
+
+    def agent_rows(self, glyph: str) -> tuple[str, ...]:
+        """Sub-agent and fork rows above the editor, hidden while the live view shows them instead.
+
+        They always use the agent spinner, like the live view's roster, whatever `/spinner` the main turn uses.
+        """
+        if self.agents_view is not None and self.agents_view.open:
+            return ()
+        frame = spinner_frame(time.monotonic())
+        return (*self.tasks.rows(frame), *self.forks.rows(frame))
+
+    def forks_command(self, args: list[str]) -> str:
+        """`/forks` prints the table; `/forks live` opens or closes the live agent view."""
+        if args != ['live']:
+            return self.forks.status_command(args)
+        return self.toggle_agents() or 'The live agent view needs an interactive terminal.'
+
+    def toggle_agents(self) -> str:
+        """Open or close the live agent view (`Ctrl+X Ctrl+A`), with saved tasks listed too."""
+        if self.agents_view is None:
+            return ''
+        self.tasks.restore()
+        return self.agents_view.toggle()
+
+    def show_tasks(self) -> str:
+        """Bare `/tasks`: the live view, on this conversation's first task."""
+        if self.agents_view is None:
+            return 'The live agent view needs an interactive terminal; /tasks stop|background|resume ID still work.'
+        self.tasks.restore()
+        first = next((record.id for _, record in task_tree(self.tasks.records())), None)
+        if first is None:
+            self.agents_view.show(key=self.agents.main.key)
+            return 'No delegated tasks in this conversation yet.'
+        return self.agents_view.show(key=f'task-{first}')
 
     def request_reload(self, args: list[str]) -> str:
         if args:
@@ -749,21 +803,31 @@ class _Shell(Generic[DepsT, OutputT]):
                 steer=self.steer,
                 run_now=self.run_now,
                 transcript=self.transcript,
-                chords={'ctrl-x ctrl-s': self.speculation.toggle, 'ctrl-b': self.tasks.promote},
+                chords={
+                    'ctrl-x ctrl-s': self.speculation.toggle,
+                    'ctrl-x ctrl-a': self.toggle_agents,
+                    'ctrl-b': self.tasks.promote,
+                },
                 pinned=self.speculation.row,
                 spinner=self.spinners.active,
-                panel=lambda glyph: (*self.tasks.rows(glyph), *self.forks.rows(glyph)),
+                panel=self.agent_rows,
             )
             self.screen.editor = self.editor.suspended
             try:
-                async with self.editor.opened():
+                async with self.editor.opened(), create_task_group() as views:
+                    self.agents_view = AgentsView(agents=self.agents, editor=self.editor)
+                    views.start_soon(self.agents_view.serve)
                     self.tasks.wake = self.editor.wake
                     if self.tasks.owner.reports(conversation_id=self.session.summary.id):
                         self.editor.wake()
-                    return await self._read_loop()
+                    try:
+                        return await self._read_loop()
+                    finally:
+                        views.cancel_scope.cancel()
             finally:
                 self.tasks.wake = None
                 self.screen.editor = None
+                self.agents_view = None
                 self.editor = None
         return await self._read_loop()
 
@@ -806,7 +870,7 @@ class _Shell(Generic[DepsT, OutputT]):
         if not any(record.status == 'running' for record in self.tasks.owner.records.values()):
             return False
         self.console.print(
-            'Plugin changes wait for delegated tasks. Stop them in /tasks or wait for completion.', markup=False
+            'Plugin changes wait for delegated tasks. Stop them with x in /tasks, or wait for completion.', markup=False
         )
         return True
 
@@ -898,6 +962,8 @@ class _Shell(Generic[DepsT, OutputT]):
             return False
         start = TurnStart(text=text)
         ended: TurnEnd | None = None
+        if not automated:
+            self.agents.main.prompt(text)
 
         async def run_turn() -> None:
             nonlocal ended
@@ -984,6 +1050,7 @@ class _Shell(Generic[DepsT, OutputT]):
                         screen=self.screen,
                         spinner=self.spinners.active,
                         tasks=self.tasks if self.session.delegations is not None else None,
+                        tee=self.agents.main.observe,
                     )
                 finally:
                     self._mid_turn_commands = None
@@ -1044,6 +1111,24 @@ def _model_label(agent: AbstractAgent[DepsT, OutputT]) -> str:
     return model.model_name if model else 'agent default'
 
 
+def _stream_renderer(
+    console: Console, *, settings: Settings, renderers: Sequence[Renderer], smooth: bool = True
+) -> StreamRenderer:
+    """The transcript's renderer, shared by the main stream and the live view's panes."""
+    return StreamRenderer(
+        console,
+        stop_loading=lambda: None,
+        show_thinking=settings.thinking,
+        smooth_seconds=settings.smooth_seconds,
+        show_tool_output=settings.tool_output,
+        shell_lines=settings.shell_lines,
+        grep_lines=settings.grep_lines,
+        tool_arg_chars=settings.tool_arg_chars,
+        renderers=renderers,
+        smooth=smooth,
+    )
+
+
 async def _run_prompt(
     session: Session[DepsT, OutputT],
     text: str | None,
@@ -1055,18 +1140,11 @@ async def _run_prompt(
     screen: Screen,
     spinner: Callable[[], Spinner],
     images: Sequence[BinaryContent] = (),
+    tee: Callable[[AgentStreamEvent], None],
     tasks: Tasks | None = None,
 ) -> TurnEnd:
-    renderer = StreamRenderer(
-        console,
-        stop_loading=lambda: None,
-        show_thinking=settings.thinking,
-        smooth_seconds=settings.smooth_seconds,
-        show_tool_output=settings.tool_output,
-        shell_lines=settings.shell_lines,
-        grep_lines=settings.grep_lines,
-        tool_arg_chars=settings.tool_arg_chars,
-        renderers=[*renderers, task_row] if tasks is not None else renderers,
+    renderer = _stream_renderer(
+        console, settings=settings, renderers=[*renderers, task_row] if tasks is not None else renderers
     )
     status.streamed_chars = 0
     status.output_tokens = None
@@ -1075,6 +1153,7 @@ async def _run_prompt(
     render_lock = Lock()
 
     async def observe(event: AgentStreamEvent) -> None:
+        tee(event)
         async with render_lock:
             status.observe(event)
             await renderer.on_stream_event(event)
