@@ -326,8 +326,12 @@ there are no background workers to stop.
 
 The built-in `observability` plugin (`pydantic_clai2.builtin_plugins.logfire`) is enabled by default in
 the stock CLI. It registers Pydantic AI's `Instrumentation` capability with an
-isolated Logfire instance, not process-wide instrumentation or custom tracing
-hooks. Agent/model/tool spans include timing, token usage, failures, text content,
+isolated Logfire instance. While it is loaded, it also makes that instance the
+process-wide Pydantic AI default (`Agent.instrument_all`), so agents built inside
+a turn or a command, such as the compaction summariser, the session namer, and
+delegated children, are traced too. Compaction is traced as a `compact_messages`
+span, in the turn for automatic compaction and under the command for `/compact`.
+Agent/model/tool spans include timing, token usage, failures, text content,
 and binary image attachments by default, including retained history used by
 later turns. This may export source code, file contents, and screenshots; verify
 the configured telemetry destination first.
@@ -423,8 +427,10 @@ With `ui_events` on, the attributes that only hold names (`command`, `menu`,
 `OPENAI_API_KEY` or `sessions.naming` would otherwise be redacted. So is
 `prompt`, which agent spans already record unscrubbed.
 
-Unload flushes and shuts down only this plugin's providers. Reload creates a new
-instance. The supplied agent and global providers are unchanged, and the existing
+Unload restores the previous agent instrumentation default, then flushes and
+shuts down only this plugin's providers. Reload creates a new instance. An agent
+with its own `instrument` setting or `Instrumentation` capability keeps it. The
+supplied agent and global OpenTelemetry providers are unchanged, and the existing
 global propagator is preserved. The SDK may install shared executor propagation
 helpers; those hooks are not removed on unload. Core's normal
 instrumentation precedence applies: the plugin's explicit per-run capability

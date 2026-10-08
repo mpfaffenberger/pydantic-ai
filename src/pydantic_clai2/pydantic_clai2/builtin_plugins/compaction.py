@@ -34,6 +34,7 @@ from pydantic_ai_harness.compaction import (
 )
 from pydantic_clai2.commands import Command
 from pydantic_clai2.plugins import Plugin, PluginHost, SessionEnd
+from pydantic_clai2.runtime.instrumentation import default_tracer
 from pydantic_clai2.ui.menus.field_menu import FieldMenu, FieldRow, first_error, run_flow, shown
 from pydantic_clai2.ui.menus.menu_worker import run_worker
 from pydantic_clai2.ui.rendering.status import Status
@@ -228,7 +229,8 @@ class CompactionPlugin(Plugin[CompactionSettings]):
         # otherwise trade a sliver of its head for a summary plus the kept first prompt, and grow.
         tail = min(self.settings.protected_tokens, tokens // 2)
         chain = build_chain(self.settings.model_copy(update={'protected_tokens': tail}))
-        after = await compact_now(chain, before, model=model, focus=' '.join(args) or None)
+        # Traced like an in-run compaction whenever agents are instrumented, as `observability` makes them.
+        after = await compact_now(chain, before, model=model, focus=' '.join(args) or None, tracer=default_tracer())
         saved = tokens - estimate_token_count(after)
         if saved <= 0:
             return 'Nothing to compact: compacting would not make the conversation smaller.'

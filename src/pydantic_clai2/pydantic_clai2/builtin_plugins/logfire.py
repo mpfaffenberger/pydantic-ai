@@ -27,6 +27,7 @@ from pydantic_clai2.builtin_plugins.logfire_session import SessionTracing, git_e
 from pydantic_clai2.builtin_plugins.logfire_setup import Setup, https_origin, run_setup
 from pydantic_clai2.config.api_keys import KeyReference, load_keys
 from pydantic_clai2.plugins import Plugin, PluginHost, PluginLoadFailed, SessionEnd, SessionStart, TurnEnd
+from pydantic_clai2.runtime.instrumentation import instrument_agents
 from pydantic_clai2.ui import telemetry
 from pydantic_clai2.ui.menus.field_menu import TERMINAL, FieldMenu, FieldRow, Runners, first_error, run_flow_async
 from pydantic_clai2.ui.rendering import theme
@@ -77,11 +78,12 @@ class LogfireSettings(BaseModel):
 
 
 class LogfirePlugin(Plugin[LogfireSettings]):
-    """Core instrumentation, without changing the supplied agent or global OTel providers."""
+    """Core instrumentation for CLAI turns and, while loaded, every agent without its own; global OTel providers stay."""
 
     def __init__(self, host: PluginHost[None], settings: LogfireSettings) -> None:
         super().__init__(host, settings)
         self._unsubscribe: Callable[[], None] | None = None
+        self._uninstrument: Callable[[], None] | None = None
         token, send_to_logfire = _destination(settings, host)
         private_dir = logfire_dir()
         propagator = get_global_textmap()
@@ -137,6 +139,8 @@ class LogfirePlugin(Plugin[LogfireSettings]):
 
     # The UI lifecycle goes only to this plugin's own instance: every enabled copy of the plugin hears these events.
     async def on_session_start(self, event: SessionStart) -> None:
+        # Agents built inside a turn or a command, such as the compaction summariser, trace here too.
+        self._uninstrument = instrument_agents(self.instrumentation.settings)
         self._session_tracing.start(await _user_email(self.settings))
         if self.settings.ui_events:
             self._unsubscribe = telemetry.subscribe(
@@ -162,6 +166,10 @@ class LogfirePlugin(Plugin[LogfireSettings]):
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
+        # Hand agents back their previous default before the providers it points at shut down.
+        if self._uninstrument is not None:
+            self._uninstrument()
+            self._uninstrument = None
         self._session_tracing.end(event.reason)
         with CancelScope(shield=True):
             finished = await to_thread.run_sync(_shutdown, self.instance)

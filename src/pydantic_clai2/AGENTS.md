@@ -345,6 +345,7 @@ Keep documented plugin-author paths (`pydantic_clai2.plugins` and
 | `runtime/speculation.py` | the `run.speculative_code_mode` switch, `Ctrl+X Ctrl+S` toggle, session counters and pinned row |
 | `runtime/speculative_mode.py` | harness `CodeMode` wiring (native writes, read-only speculation allowlist, guidance), imported only while on |
 | `runtime/eager_timing.py` | eager `run_code` latency measurement and the nested-call id pattern |
+| `runtime/instrumentation.py` | the process-wide `Agent.instrument_all` default `observability` installs while loaded (newest install wins, unload restores), and `default_tracer`, which `/compact` traces with |
 | `runtime/sandbox_calls.py` | events and ordering that render calls from inside `run_code` like direct calls; no harness imports |
 | `ui/rendering/theme.py` | Existing brand roles, opt-in Termflow palette scope, `color()`, `sgr()`, `roles()` |
 | `ui/rendering/recolor.py` | repaints retained styled transcript lines in a newly selected theme |

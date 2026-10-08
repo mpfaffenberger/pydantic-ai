@@ -2125,9 +2125,12 @@ shows how to put a different one, a web form for instance, in its place.
 The stock CLI enables the built-in `observability` plugin by default. It adds Pydantic
 AI's [`Instrumentation`](https://pydantic.dev/docs/ai/capabilities/overview/)
 capability to CLAI turns for agent, model-request, and tool
-spans, including timing, token usage, and failures. It adds CLAI's own UI spans
-only when `ui_events` is on (see below), and does not instrument HTTP clients or
-unrelated agents globally.
+spans, including timing, token usage, and failures. While it is loaded, it is also
+the default instrumentation for every Pydantic AI agent in the process without its
+own, so the compaction summariser, session naming, and delegated tasks are traced,
+and compaction shows up as `compact_messages` spans, including `/compact`. It adds
+CLAI's own UI spans only when `ui_events` is on (see below), and does not
+instrument HTTP clients.
 
 Startup plugin load failures reported in the terminal are also sent through the configured
 Logfire instance, including their exception and traceback, even when `ui_events` is off. Failures are

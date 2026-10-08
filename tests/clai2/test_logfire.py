@@ -20,9 +20,10 @@ from termflow.tui.menu import MenuResult
 
 from pydantic_ai import Agent, BinaryContent
 from pydantic_ai.capabilities import Instrumentation
+from pydantic_ai.messages import ModelRequest
 from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_ai.models.test import TestModel
-from pydantic_clai2 import DEFAULT_PLUGINS
+from pydantic_clai2 import DEFAULT_PLUGINS, Session
 from pydantic_clai2.builtin_plugins import logfire as logfire_plugin
 from pydantic_clai2.builtin_plugins.logfire import CREDENTIALS_FILE, PROJECT, LogfirePlugin, LogfireSource, logfire_dir
 from pydantic_clai2.commands import Commands
@@ -33,6 +34,7 @@ from pydantic_clai2.plugins import LoadedPlugin, PluginHost, SessionEnd, Session
 from pydantic_clai2.plugins.loader import PluginError, PluginLoader
 from pydantic_clai2.ui import telemetry
 from tests.clai2.menu_script import Script, pick, typed
+from tests.clai2.test_compaction import make_plugin as make_compaction, two_turns
 
 
 class Exporter(InMemorySpanExporter):
@@ -244,6 +246,54 @@ async def test_disable_reload_and_existing_agent_instrumentation(
         await loader.close('exit')
         existing_provider.shutdown()
     assert all(exporter.closed for exporter in recorder.exporters)
+
+
+def agent_runs(recorder: Recorder) -> list[object]:
+    return [
+        (span.attributes or {}).get('gen_ai.agent.name')
+        for span in recorder.spans()
+        if operation(span) == 'invoke_agent'
+    ]
+
+
+async def test_session_instruments_agents_without_their_own(recorder: Recorder) -> None:
+    """Agents CLAI or harness build mid-turn get no plugin capabilities, so the default reaches them instead."""
+    user = InstrumentationSettings(tracer_provider=TracerProvider(shutdown_on_exit=False))
+    Agent.instrument_all(user)
+    plugin = load_logfire(make_host())
+    try:
+        await plugin.dispatch(SessionStart(agent=Agent(TestModel()), settings=Settings()))
+        await Agent(TestModel(), name='built_mid_turn').run('hi')
+        opted_out = Agent(TestModel(), name='opted_out')
+        opted_out.instrument = False
+        await opted_out.run('hi')
+    finally:
+        await close(plugin)
+        assert Agent._instrument_default is user, 'unload restores the previous default'  # pyright: ignore[reportPrivateUsage]
+        Agent.instrument_all(False)
+    assert agent_runs(recorder) == ['built_mid_turn']
+
+
+async def test_manual_and_automatic_compaction_are_traced(recorder: Recorder) -> None:
+    observability = load_logfire(make_host())
+    session = Session(Agent(TestModel(custom_output_text='the gist'), name='clai'), deps=None)
+    compaction = make_compaction(session, context_window=1000, protected_tokens=0)
+    session.plugins = [*observability.capabilities, *compaction.capabilities]
+    try:
+        await observability.dispatch(SessionStart(agent=session.agent, settings=Settings()))
+        session.replace_messages(two_turns())
+        assert (await compaction.commands.execute_async('/compact')).startswith('Compacted 4 messages')
+        session.replace_messages([*two_turns(), ModelRequest.user_text_prompt('old ' * 1000), two_turns()[1]])
+        await session.prompt('new')
+    finally:
+        await close(observability)
+    spans = recorder.spans()
+    assert [span.name for span in spans].count('compact_messages') == 2
+    assert agent_runs(recorder).count('summarizing_compaction') == 2
+    [run] = [span for span in spans if operation(span) == 'invoke_agent' and span.name == 'invoke_agent clai']
+    automatic = [span for span in spans if span.name == 'compact_messages'][-1]
+    assert run.context is not None and automatic.context is not None
+    assert automatic.context.trace_id == run.context.trace_id, 'in-run compaction nests under the turn'
 
 
 @pytest.mark.parametrize(
